@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid Trading - Scaling Monitor Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #fff;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .metric-card {
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .critical {
+            color: #ff4444;
+        }
+
+        .warning {
+            color: #ffaa44;
+        }
+
+        .ok {
+            color: #44ff44;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-top: 20px;
+        }
+
+        .recommendations {
+            background: #333;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .recommendation-item {
+            margin: 10px 0;
+            padding: 10px;
+            background: #444;
+            border-radius: 4px;
+        }
+
+        .priority-immediate {
+            border-left: 4px solid #ff4444;
+        }
+
+        .priority-high {
+            border-left: 4px solid #ffaa44;
+        }
+
+        .priority-medium {
+            border-left: 4px solid #4444ff;
+        }
+
+        .priority-low {
+            border-left: 4px solid #888;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Grid Trading System - Scaling Monitor</h1>
+
+    <div class="dashboard">
+        <!-- CPU Usage -->
+        <div class="metric-card">
+            <h3>CPU Usage</h3>
+            <div class="metric-value" id="cpu-usage">--</div>
+            <canvas id="cpu-chart"></canvas>
+        </div>
+
+        <!-- Memory Usage -->
+        <div class="metric-card">
+            <h3>Memory Usage</h3>
+            <div class="metric-value" id="memory-usage">--</div>
+            <canvas id="memory-chart"></canvas>
+        </div>
+
+        <!-- Execution Latency -->
+        <div class="metric-card">
+            <h3>Execution Latency (p99)</h3>
+            <div class="metric-value" id="latency">--</div>
+            <canvas id="latency-chart"></canvas>
+        </div>
+
+        <!-- Queue Depth -->
+        <div class="metric-card">
+            <h3>Queue Depth</h3>
+            <div class="metric-value" id="queue-depth">--</div>
+            <canvas id="queue-chart"></canvas>
+        </div>
+    </div>
+
+    <!-- Scaling Score -->
+    <div class="metric-card" style="margin-top: 20px;">
+        <h3>Overall Scaling Score</h3>
+        <div class="metric-value" id="scaling-score" style="font-size: 3em;">--</div>
+        <div id="scaling-status"></div>
+    </div>
+
+    <!-- Recommendations -->
+    <div class="recommendations">
+        <h3>Scaling Recommendations</h3>
+        <div id="recommendations-list"></div>
+    </div>
+
+    <!-- Predictions -->
+    <div class="metric-card" style="margin-top: 20px;">
+        <h3>Resource Predictions</h3>
+        <div id="predictions"></div>
+    </div>
+
+    <script>
+        // Initialize charts
+        const charts = {};
+
+        function initChart(canvasId, label) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: label,
+                        data: [],
+                        borderColor: '#4444ff',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: '#444' },
+                            ticks: { color: '#fff' }
+                        },
+                        x: {
+                            grid: { color: '#444' },
+                            ticks: { color: '#fff' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // Initialize all charts
+        charts.cpu = initChart('cpu-chart', 'CPU %');
+        charts.memory = initChart('memory-chart', 'Memory %');
+        charts.latency = initChart('latency-chart', 'Latency ms');
+        charts.queue = initChart('queue-chart', 'Queue Size');
+
+        // Update dashboard with new data
+        function updateDashboard(data) {
+            // Update current values
+            updateMetric('cpu-usage', data.current_metrics.cpu_usage, '%', 70, 90);
+            updateMetric('memory-usage', data.current_metrics.memory_usage, '%', 80, 95);
+            updateMetric('latency', data.current_metrics.execution_latency_p99, 'ms', 20, 50);
+            updateMetric('queue-depth', data.current_metrics.execution_queue_depth, '', 500, 1000);
+
+            // Update scaling score
+            const score = data.scaling_score;
+            document.getElementById('scaling-score').textContent = score.toFixed(1);
+            document.getElementById('scaling-score').className =
+                score > 80 ? 'metric-value critical' :
+                    score > 50 ? 'metric-value warning' :
+                        'metric-value ok';
+
+            // Update status
+            document.getElementById('scaling-status').textContent =
+                data.immediate_action_required ? '⚠️ IMMEDIATE ACTION REQUIRED' : '✓ System Stable';
+
+            // Update recommendations
+            updateRecommendations(data.recommendations);
+
+            // Update predictions
+            updatePredictions(data.predictions);
+        }
+
+        function updateMetric(elementId, value, unit, warningThreshold, criticalThreshold) {
+            const element = document.getElementById(elementId);
+            element.textContent = value.toFixed(1) + unit;
+
+            if (value >= criticalThreshold) {
+                element.className = 'metric-value critical';
+            } else if (value >= warningThreshold) {
+                element.className = 'metric-value warning';
+            } else {
+                element.className = 'metric-value ok';
+            }
+        }
+
+        function updateRecommendations(recommendations) {
+            const container = document.getElementById('recommendations-list');
+            container.innerHTML = '';
+
+            recommendations.forEach(rec => {
+                const item = document.createElement('div');
+                item.className = `recommendation-item priority-${rec.priority.toLowerCase()}`;
+                item.innerHTML = `
+                    <strong>${rec.priority}: ${rec.component}</strong><br>
+                    ${rec.reason}<br>
+                    <small>Action: ${rec.action}</small>
+                `;
+                container.appendChild(item);
+            });
+
+            if (recommendations.length === 0) {
+                container.innerHTML = '<p>No scaling actions recommended at this time.</p>';
+            }
+        }
+
+        function updatePredictions(predictions) {
+            const container = document.getElementById('predictions');
+            let html = '<table style="width: 100%;">';
+            html += '<tr><th>Metric</th><th>Current</th><th>1 Day</th><th>1 Week</th><th>Days to Critical</th></tr>';
+
+            for (const [metric, pred] of Object.entries(predictions)) {
+                const daysUntilCritical = pred.days_until_critical || 'N/A';
+                const daysClass = daysUntilCritical < 7 ? 'critical' :
+                    daysUntilCritical < 30 ? 'warning' : 'ok';
+
+                html += `<tr>
+                    <td>${metric}</td>
+                    <td>${pred.current.toFixed(1)}</td>
+                    <td>${pred['1_day'].toFixed(1)}</td>
+                    <td>${pred['1_week'].toFixed(1)}</td>
+                    <td class="${daysClass}">${typeof daysUntilCritical === 'number' ?
+                        daysUntilCritical.toFixed(1) : daysUntilCritical
+                    }</td>
+                </tr>`;
+            }
+
+            html += '</table>';
+            container.innerHTML = html;
+        }
+
+        // Fetch data periodically
+        async function fetchScalingData() {
+            try {
+                const response = await fetch('/api/scaling-report');
+                const data = await response.json();
+                updateDashboard(data);
+
+                // Update charts
+                updateCharts(data);
+            } catch (error) {
+                console.error('Failed to fetch scaling data:', error);
+            }
+        }
+
+        function updateCharts(data) {
+            // Add new data points to charts
+            const timestamp = new Date().toLocaleTimeString();
+
+            addChartData(charts.cpu, timestamp, data.current_metrics.cpu_usage);
+            addChartData(charts.memory, timestamp, data.current_metrics.memory_usage);
+            addChartData(charts.latency, timestamp, data.current_metrics.execution_latency_p99);
+            addChartData(charts.queue, timestamp, data.current_metrics.execution_queue_depth);
+        }
+
+        function addChartData(chart, label, value) {
+            chart.data.labels.push(label);
+            chart.data.datasets[0].data.push(value);
+
+            // Keep only last 20 data points
+            if (chart.data.labels.length > 20) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+
+            chart.update();
+        }
+
+        // Initial fetch and setup periodic updates
+        fetchScalingData();
+        setInterval(fetchScalingData, 60000);  // Update every minute
+    </script>
+</body>
+
+</html>

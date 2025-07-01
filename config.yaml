@@ -1,0 +1,121 @@
+# config.yaml - Complete GridAttention Configuration
+# Security: Use environment variables for production
+exchanges:
+  binance:
+    class: "binance"
+    api_key: "X91ndaroJjPpPDDCtk7B2VjnsCBynWBYWBnr2cdGkIPyyTv1qGO4RqzchTiteQIU"
+    secret: "jzzEzD7aMGlAyqDUbAvC0fuLF3IWQAqY622VPHbCL8rpcQBW1DaLUnOzdK145hKj"    
+    rate_limit: 50
+    rate_window: 1000
+    websocket_url: "wss://stream.binance.com:9443/ws"
+    options:
+      defaultType: "spot"
+      
+system:
+  mode: "paper_trading"    # paper_trading | live_trading
+  capital: 10000           # เงินทุนเริ่มต้น
+  base_currency: "USDT"
+  
+market_data:
+  buffer_size: 1000
+  attention_store_size: 10000
+  websocket:
+    reconnect_delay: 5
+    max_reconnect_attempts: 10
+  exchanges:
+    - name: "binance"
+      url: "wss://stream.binance.com:9443/ws"
+      subscribe_msg:
+        method: "SUBSCRIBE"
+        params: ["btcusdt@ticker"]
+        id: 1
+  validators:
+    price_min: 0
+    price_max_change: 0.1
+    volume_min: 0
+    volume_max_spike: 10.0
+    timestamp_max_delay: 1000
+    
+features:
+  technical_indicators:
+    - rsi
+    - sma
+    - ema
+    - bollinger_bands
+  lookback_periods: [14, 20, 50]
+  
+attention:
+  min_trades_learning: 1000
+  min_trades_shadow: 200
+  min_trades_active: 100
+  control_percentage: 0.3
+  
+regime_detector:
+  volatility_window: 20
+  trend_window: 50
+  correlation_threshold: 0.7
+  
+strategy_selector:
+  grid_types: ["symmetric", "geometric"]
+  spacing_range: [0.001, 0.01]
+  level_range: [3, 10]
+  
+risk_management:
+  max_position_size: 0.1  # 10% of capital
+  max_daily_loss: 0.05    # 5% daily loss limit
+  max_drawdown: 0.15      # 15% drawdown limit
+  stop_loss: 0.02         # 2% stop loss
+  take_profit: 0.04       # 4% take profit
+  
+execution:
+  binance:
+    class: "binance"
+    api_key: "X91ndaroJjPpPDDCtk7B2VjnsCBynWBYWBnr2cdGkIPyyTv1qGO4RqzchTiteQIU"
+    secret: "jzzEzD7aMGlAyqDUbAvC0fuLF3IWQAqY622VPHbCL8rpcQBW1DaLUnOzdK145hKj"
+    rate_limit: 50
+    rate_window: 1000
+    options:
+      defaultType: "spot"
+      
+performance:
+  metrics_interval: 60     # seconds
+  report_interval: 3600    # 1 hour
+  save_interval: 86400     # 24 hours
+  
+feedback:
+  learning_rate: 0.01
+  adaptation_speed: "medium"
+  
+logging:
+  level: "INFO"
+  file: "grid_trading.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# Scaling Monitor Configuration
+scaling_monitor:
+  # Thresholds for alerts
+  thresholds:
+    cpu_warning: 70.0
+    cpu_critical: 90.0
+    memory_warning: 80.0
+    memory_critical: 95.0
+    latency_warning: 20.0  # ms
+    latency_critical: 50.0  # ms
+    queue_warning: 500
+    queue_critical: 1000
+    error_rate_warning: 0.01  # 1%
+    error_rate_critical: 0.05  # 5%
+    
+  # Auto-scaling configuration
+  auto_scaling:
+    enabled: false  # Set to true for production
+    cooldown_seconds: 300  # 5 minutes between scaling actions
+    
+  # Monitoring intervals
+  check_interval: 60  # seconds
+  report_interval: 300  # 5 minutes
+  
+  # Export settings
+  export_metrics: true
+  export_path: "./metrics_export/"
