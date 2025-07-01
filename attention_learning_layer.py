@@ -1,6 +1,7 @@
 """
 attention_learning_layer.py
 Master attention controller with three sub-modules for grid trading system
+Enhanced with comprehensive overfitting prevention mechanisms
 
 Author: Grid Trading System
 Date: 2024
@@ -19,6 +20,7 @@ from abc import ABC, abstractmethod
 import hashlib
 import numpy as np
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # Third-party imports
 import pandas as pd
@@ -67,6 +69,18 @@ ATTENTION_WINDOW_SIZE = 1000
 VALIDATION_THRESHOLD = 0.5  # Maximum 50% feature change allowed
 MIN_SAMPLES_FOR_DETECTION = 100  # Minimum samples for overfitting detection
 
+# Enhanced regularization configuration
+REGULARIZATION_CONFIG = {
+    'dropout_rate': 0.3,           # เพิ่มจาก 0.1
+    'weight_decay': 0.01,          # L2 regularization
+    'gradient_clipping': 1.0,      # Gradient clipping threshold
+    'early_stopping_patience': 50,  # Early stopping patience
+    'learning_rate_decay': 0.95,   # LR decay factor
+    'max_norm': 2.0,              # Max norm for weight clipping
+    'label_smoothing': 0.1,       # Label smoothing factor
+    'mixup_alpha': 0.2            # Mixup augmentation alpha
+}
+
 
 @dataclass
 class AttentionMetrics:
@@ -78,6 +92,15 @@ class AttentionMetrics:
     active_applications: int = 0
     performance_improvements: Dict[str, float] = field(default_factory=dict)
     phase_transitions: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Regularization tracking
+    regularization_metrics: Dict[str, List[float]] = field(default_factory=lambda: {
+        'dropout_effectiveness': [],
+        'weight_decay_impact': [],
+        'gradient_norms': [],
+        'learning_rates': []
+    })
+    overfitting_detections: List[Dict[str, Any]] = field(default_factory=list)
     
     def record_processing_time(self, time_ms: float):
         """Record processing time"""
@@ -232,6 +255,17 @@ class FeatureAttention(BaseAttentionModule):
         # Neural network for feature attention
         self.attention_network = None
         self.optimizer = None
+        self.scheduler = None
+        self.scaler = None
+        
+        # Early stopping
+        self.best_loss = float('inf')
+        self.patience_counter = 0
+        self.early_stopping_patience = REGULARIZATION_CONFIG['early_stopping_patience']
+        self.training = True  # Training mode flag
+        
+        # Overfitting detector
+        self.overfitting_detector = OverfittingDetector()
         
     async def observe(self, features: Dict[str, float], context: Dict[str, Any]) -> None:
         """Observe features during learning phase"""
@@ -258,33 +292,46 @@ class FeatureAttention(BaseAttentionModule):
             await self._initialize_network(len(features))
             
     async def _initialize_network(self, num_features: int) -> None:
-        """Initialize attention neural network with regularization"""
-        dropout_rate = 0.3  # Default dropout rate
+        """Initialize attention neural network with enhanced regularization"""
+        if not TORCH_AVAILABLE:
+            logger.warning("PyTorch not available, skipping network initialization")
+            return
+            
+        # Use enhanced regularization config
+        dropout_rate = REGULARIZATION_CONFIG['dropout_rate']
+        weight_decay = REGULARIZATION_CONFIG['weight_decay']
         
         self.attention_network = FeatureAttentionNetwork(
             num_features, 
             dropout_rate=dropout_rate
         )
         
-        # Optimizer with weight decay
-        weight_decay = 0.01  # Default weight decay
-        self.optimizer = torch.optim.Adam(
+        # Optimizer with weight decay and gradient clipping
+        self.optimizer = torch.optim.AdamW(  # Use AdamW for better weight decay
             self.attention_network.parameters(),
             lr=LEARNING_RATE,
-            weight_decay=weight_decay
+            weight_decay=weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
         
-        # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 
-            mode='max', 
-            patience=20, 
-            factor=0.5,
-            min_lr=1e-6
+        # Learning rate scheduler with cosine annealing
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            self.optimizer,
+            T_0=100,  # Restart every 100 iterations
+            T_mult=2,  # Double the period after each restart
+            eta_min=1e-6
         )
+        
+        # Initialize gradient scaler for mixed precision (if available)
+        if hasattr(torch.cuda.amp, 'GradScaler'):
+            self.scaler = torch.cuda.amp.GradScaler()
+        else:
+            self.scaler = None
         
         self.is_initialized = True
-        logger.info(f"Initialized feature attention network with regularization (dropout={dropout_rate})")
+        logger.info(f"Initialized feature attention network with enhanced regularization "
+                    f"(dropout={dropout_rate}, weight_decay={weight_decay})")
         
     async def calculate_weights(self, features: Dict[str, float]) -> Dict[str, float]:
         """Calculate attention weights for features"""
@@ -320,9 +367,92 @@ class FeatureAttention(BaseAttentionModule):
         
         return weights
         
+    async def calculate_weights_ensemble(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Calculate weights using ensemble of methods for robustness"""
+        weights_list = []
+        
+        # Method 1: Neural network weights
+        if self.is_initialized:
+            nn_weights = await self.calculate_weights(features)
+            weights_list.append(nn_weights)
+        
+        # Method 2: Statistical importance (correlation-based)
+        stat_weights = self._calculate_statistical_weights(features)
+        if stat_weights:
+            weights_list.append(stat_weights)
+        
+        # Method 3: Information gain based
+        info_weights = self._calculate_information_gain_weights(features)
+        if info_weights:
+            weights_list.append(info_weights)
+        
+        # Ensemble: average the weights
+        if not weights_list:
+            # Fallback to uniform weights
+            uniform_weight = 1.0 / len(features)
+            return {name: uniform_weight for name in features}
+        
+        # Average weights from all methods
+        ensemble_weights = {}
+        feature_names = sorted(features.keys())
+        
+        for name in feature_names:
+            weights = [w.get(name, 0) for w in weights_list]
+            ensemble_weights[name] = np.mean(weights)
+        
+        # Normalize
+        total = sum(ensemble_weights.values())
+        if total > 0:
+            ensemble_weights = {k: v/total for k, v in ensemble_weights.items()}
+        
+        return ensemble_weights
+
+    def _calculate_statistical_weights(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Calculate weights based on statistical properties"""
+        if len(self.feature_outcomes) < 50:
+            return {}
+        
+        weights = {}
+        for name, values in self.feature_stats.items():
+            if name not in features:
+                continue
+                
+            # Calculate correlation with outcomes
+            if name in self.feature_outcomes and len(self.feature_outcomes[name]) > 10:
+                feature_vals = [v[0] for v in self.feature_outcomes[name]]
+                outcomes = [v[1] for v in self.feature_outcomes[name]]
+                
+                # Use Spearman correlation (more robust to outliers)
+                correlation, _ = stats.spearmanr(feature_vals, outcomes)
+                weights[name] = abs(correlation) if not np.isnan(correlation) else 0.1
+            else:
+                weights[name] = 0.1
+        
+        return weights
+
+    def _calculate_information_gain_weights(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Calculate weights based on information gain"""
+        # Simplified information gain calculation
+        weights = {}
+        
+        for name, value in features.items():
+            if name in self.feature_stats:
+                # Use coefficient of variation as proxy for information content
+                stats_dict = self.feature_stats[name]
+                if stats_dict['std'] > 0 and stats_dict['mean'] != 0:
+                    cv = stats_dict['std'] / abs(stats_dict['mean'])
+                    # Higher CV means more information
+                    weights[name] = min(cv, 1.0)
+                else:
+                    weights[name] = 0.1
+            else:
+                weights[name] = 0.1
+                
+        return weights
+        
     async def _train_step(self, features: Dict[str, float], outcome: float) -> float:
-        """Single training step with gradient clipping"""
-        if not self.is_initialized:
+        """Single training step with enhanced regularization techniques"""
+        if not self.is_initialized or not TORCH_AVAILABLE:
             return 0.0
             
         # Prepare data
@@ -330,32 +460,81 @@ class FeatureAttention(BaseAttentionModule):
         feature_values = [features[name] for name in feature_names]
         normalized_values = self._normalize_features(feature_values)
         
+        # Data augmentation - add noise
+        if self.training and np.random.rand() < 0.5:
+            noise = torch.randn_like(torch.FloatTensor(normalized_values)) * 0.01
+            normalized_values = [v + n.item() for v, n in zip(normalized_values, noise)]
+        
         input_tensor = torch.FloatTensor(normalized_values).unsqueeze(0)
         target_tensor = torch.FloatTensor([outcome])
         
-        # Forward pass
-        self.optimizer.zero_grad()
-        output = self.attention_network(input_tensor)
+        # Label smoothing
+        if self.training:
+            smoothing = REGULARIZATION_CONFIG['label_smoothing']
+            target_tensor = target_tensor * (1 - smoothing) + smoothing * 0.5
         
-        # Custom loss with regularization
-        attention_weights = F.softmax(output, dim=1)
-        weighted_features = attention_weights * input_tensor
-        prediction = weighted_features.sum()
-        
-        # MSE loss + L1 regularization on attention weights
-        mse_loss = F.mse_loss(prediction, target_tensor)
-        l1_reg = 0.001 * attention_weights.abs().mean()
-        loss = mse_loss + l1_reg
+        # Forward pass (with mixed precision if available)
+        if self.scaler is not None:
+            with torch.cuda.amp.autocast():
+                output = self.attention_network(input_tensor)
+                attention_weights = F.softmax(output, dim=1)
+                weighted_features = attention_weights * input_tensor
+                prediction = weighted_features.sum()
+                
+                # Multi-component loss
+                mse_loss = F.mse_loss(prediction, target_tensor)
+                l1_reg = REGULARIZATION_CONFIG['weight_decay'] * attention_weights.abs().mean()
+                entropy_reg = 0.01 * (attention_weights * torch.log(attention_weights + 1e-8)).sum()
+                
+                loss = mse_loss + l1_reg - entropy_reg  # Negative entropy encourages diversity
+        else:
+            # Standard forward pass
+            self.optimizer.zero_grad()
+            output = self.attention_network(input_tensor)
+            attention_weights = F.softmax(output, dim=1)
+            weighted_features = attention_weights * input_tensor
+            prediction = weighted_features.sum()
+            
+            # Multi-component loss
+            mse_loss = F.mse_loss(prediction, target_tensor)
+            l1_reg = REGULARIZATION_CONFIG['weight_decay'] * attention_weights.abs().mean()
+            entropy_reg = 0.01 * (attention_weights * torch.log(attention_weights + 1e-8)).sum()
+            
+            loss = mse_loss + l1_reg - entropy_reg
         
         # Backward pass with gradient clipping
-        loss.backward()
-        gradient_clipping = 1.0  # Default gradient clipping
-        torch.nn.utils.clip_grad_norm_(
-            self.attention_network.parameters(), 
-            gradient_clipping
-        )
-        self.optimizer.step()
+        if self.scaler is not None:
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self.attention_network.parameters(), 
+                REGULARIZATION_CONFIG['gradient_clipping']
+            )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.attention_network.parameters(), 
+                REGULARIZATION_CONFIG['gradient_clipping']
+            )
+            self.optimizer.step()
         
+        # Update learning rate
+        if hasattr(self, 'scheduler'):
+            self.scheduler.step()
+        
+        # Early stopping check
+        if loss.item() < self.best_loss:
+            self.best_loss = loss.item()
+            self.patience_counter = 0
+        else:
+            self.patience_counter += 1
+            
+        if self.patience_counter >= self.early_stopping_patience:
+            logger.info(f"Early stopping triggered after {self.patience_counter} epochs without improvement")
+            self.training = False  # Stop training
+            
         return loss.item()
         
     async def apply_weights(self, features: Dict[str, float]) -> Dict[str, float]:
@@ -390,6 +569,19 @@ class FeatureAttention(BaseAttentionModule):
             normalized.append(normalized_value)
             
         return normalized
+        
+    def _mixup_augmentation(self, features1: List[float], features2: List[float], 
+                           target1: float, target2: float, alpha: float = 0.2) -> Tuple[List[float], float]:
+        """Mixup data augmentation for better generalization"""
+        lam = np.random.beta(alpha, alpha) if alpha > 0 else 1
+        
+        mixed_features = [
+            lam * f1 + (1 - lam) * f2 
+            for f1, f2 in zip(features1, features2)
+        ]
+        mixed_target = lam * target1 + (1 - lam) * target2
+        
+        return mixed_features, mixed_target
         
     async def update_importance(self, performance_feedback: Dict[str, float]) -> None:
         """Update feature importance based on performance feedback"""
@@ -528,12 +720,17 @@ class TemporalAttention(BaseAttentionModule):
             
     async def _initialize_lstm(self) -> None:
         """Initialize LSTM network for temporal attention"""
+        if not TORCH_AVAILABLE:
+            logger.warning("PyTorch not available, skipping LSTM initialization")
+            return
+            
         # Determine input size from observed data
         if self.temporal_patterns['short_term']:
             sample_data = self.temporal_patterns['short_term'][0]['data']
             input_size = len(sample_data)
             
-            self.lstm_network = TemporalAttentionLSTM(input_size, self.hidden_size)
+            dropout_rate = REGULARIZATION_CONFIG['dropout_rate']
+            self.lstm_network = TemporalAttentionLSTM(input_size, self.hidden_size, dropout_rate)
             self.optimizer = torch.optim.Adam(self.lstm_network.parameters(), lr=LEARNING_RATE)
             self.is_initialized = True
             
@@ -752,6 +949,10 @@ class RegimeAttention(BaseAttentionModule):
             
     async def _initialize_regime_network(self, regime: str) -> None:
         """Initialize neural network for specific regime"""
+        if not TORCH_AVAILABLE:
+            logger.warning("PyTorch not available, skipping regime network initialization")
+            return
+            
         # Determine input/output sizes from observations
         regime_stats = self.regime_performance[regime]
         
@@ -849,36 +1050,70 @@ class FeatureAttentionNetwork(nn.Module):
         # ลดขนาด network และเพิ่ม regularization
         hidden_size = max(num_features // 2, 16)  # ลดขนาด hidden layer
         
+        # Layer 1 with enhanced regularization
         self.fc1 = nn.Linear(num_features, hidden_size)
-        self.bn1 = nn.BatchNorm1d(hidden_size)  # เพิ่ม batch normalization
+        self.bn1 = nn.BatchNorm1d(hidden_size)
         self.dropout1 = nn.Dropout(dropout_rate)
         
-        self.fc2 = nn.Linear(hidden_size, num_features)
-        self.bn2 = nn.BatchNorm1d(num_features)
+        # Layer 2 with enhanced regularization  
+        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
+        self.bn2 = nn.BatchNorm1d(hidden_size // 2)
         self.dropout2 = nn.Dropout(dropout_rate)
         
+        # Output layer
+        self.fc3 = nn.Linear(hidden_size // 2, num_features)
+        self.bn3 = nn.BatchNorm1d(num_features)
+        self.dropout3 = nn.Dropout(dropout_rate * 0.5)  # Less dropout on output
+        
+        # Weight initialization with smaller values
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize weights with Xavier initialization scaled down"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.5)  # Smaller initialization
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+                    
     def forward(self, x):
+        # Layer 1
         x = F.relu(self.fc1(x))
-        x = self.bn1(x) if x.shape[0] > 1 else x  # Skip batch norm if batch size is 1
+        x = self.bn1(x) if x.shape[0] > 1 else x
         x = self.dropout1(x)
         
-        x = self.fc2(x)
+        # Layer 2
+        x = F.relu(self.fc2(x))
         x = self.bn2(x) if x.shape[0] > 1 else x
         x = self.dropout2(x)
+        
+        # Output layer
+        x = self.fc3(x)
+        x = self.bn3(x) if x.shape[0] > 1 else x
+        x = self.dropout3(x)
         
         return x
 
 
 class TemporalAttentionLSTM(nn.Module):
-    """LSTM network for temporal attention"""
+    """LSTM network for temporal attention with regularization"""
     
-    def __init__(self, input_size: int, hidden_size: int):
+    def __init__(self, input_size: int, hidden_size: int, dropout_rate: float = 0.3):
         super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.lstm = nn.LSTM(
+            input_size, 
+            hidden_size, 
+            batch_first=True,
+            dropout=dropout_rate,  # Add dropout to LSTM
+            num_layers=2  # Use 2 layers for better capacity
+        )
         self.hidden_size = hidden_size
+        self.layer_norm = nn.LayerNorm(hidden_size)  # Add layer normalization
         
     def forward(self, x):
         output, (hidden, cell) = self.lstm(x)
+        # Apply layer normalization to output
+        output = self.layer_norm(output)
         return output, (hidden, cell)
 
 
@@ -1112,7 +1347,7 @@ class AttentionLearningLayer:
         # Try to load warmup state
         asyncio.create_task(self._check_and_load_warmup())
         
-        logger.info("Initialized Attention Learning Layer with Validation and A/B Testing")
+        logger.info("Initialized Attention Learning Layer with Enhanced Regularization")
     
     async def _check_and_load_warmup(self):
         """Check for warmup state file and load if available"""
@@ -1224,8 +1459,8 @@ class AttentionLearningLayer:
     async def _shadow_phase(self, features: Dict[str, float], regime: str, context: Dict[str, Any]) -> Dict[str, float]:
         """Shadow phase: calculate but don't apply"""
         
-        # Calculate attention weights
-        feature_weights = await self.feature_attention.calculate_weights(features)
+        # Calculate attention weights (use ensemble method for robustness)
+        feature_weights = await self.feature_attention.calculate_weights_ensemble(features)
         temporal_weights = await self.temporal_attention.calculate_weights(context.get('history', []))
         regime_adjustments = await self.regime_attention.calculate_adjustments(regime)
         
@@ -1264,7 +1499,7 @@ class AttentionLearningLayer:
         # Test group - apply attention
         context['ab_group'] = 'test'
         
-        # Apply feature attention
+        # Apply feature attention (use ensemble for better generalization)
         weighted_features = await self.feature_attention.apply_weights(features)
         
         # Validate weighted features
@@ -1372,7 +1607,9 @@ class AttentionLearningLayer:
             'feature_importance': self.feature_attention.get_importance_scores(),
             'temporal_weights': self.temporal_attention.temporal_weights,
             'regime_performance': self.regime_attention.get_performance_by_regime(),
-            'performance_improvement': self._calculate_performance_improvement()
+            'performance_improvement': self._calculate_performance_improvement(),
+            'validation_rejection_rate': self.validator.get_rejection_rate(),
+            'ab_test_results': self.ab_test.get_statistical_significance()
         }
         
     async def force_phase_transition(self, target_phase: AttentionPhase) -> None:
@@ -1402,11 +1639,14 @@ class AttentionLearningLayer:
             'metrics': {
                 'total_observations': self.metrics.total_observations,
                 'shadow_calculations': self.metrics.shadow_calculations,
-                'active_applications': self.metrics.active_applications
+                'active_applications': self.metrics.active_applications,
+                'regularization_metrics': self.metrics.regularization_metrics,
+                'overfitting_detections': self.metrics.overfitting_detections
             },
             'feature_attention': {
                 'weights': self.feature_attention.attention_weights,
-                'importance': self.feature_attention.get_importance_scores()
+                'importance': self.feature_attention.get_importance_scores(),
+                'stability': self.feature_attention.get_stability_scores()
             },
             'temporal_attention': {
                 'weights': self.temporal_attention.temporal_weights,
@@ -1415,6 +1655,11 @@ class AttentionLearningLayer:
             'regime_attention': {
                 'performance': self.regime_attention.get_performance_by_regime(),
                 'adjustments': dict(self.regime_attention.parameter_adjustments)
+            },
+            'ab_test_results': self.ab_test.get_statistical_significance(),
+            'validation_stats': {
+                'rejection_rate': self.validator.get_rejection_rate(),
+                'total_validations': len(self.validator.validation_history)
             }
         }
         
@@ -1438,6 +1683,11 @@ class AttentionLearningLayer:
             self.metrics.shadow_calculations = state['metrics']['shadow_calculations']
             self.metrics.active_applications = state['metrics']['active_applications']
             
+            if 'regularization_metrics' in state['metrics']:
+                self.metrics.regularization_metrics = state['metrics']['regularization_metrics']
+            if 'overfitting_detections' in state['metrics']:
+                self.metrics.overfitting_detections = state['metrics']['overfitting_detections']
+            
             # Restore attention states
             self.feature_attention.attention_weights = state['feature_attention']['weights']
             self.temporal_attention.temporal_weights = state['temporal_attention']['weights']
@@ -1447,13 +1697,14 @@ class AttentionLearningLayer:
 
 # Example usage
 async def main():
-    """Example usage of AttentionLearningLayer"""
+    """Example usage of AttentionLearningLayer with enhanced regularization"""
     
-    # Initialize attention layer
+    # Initialize attention layer with custom config
     config = {
         'min_trades_learning': 100,  # Reduced for demo
         'min_trades_shadow': 50,
-        'min_trades_active': 25
+        'min_trades_active': 25,
+        'control_percentage': 0.3  # 30% control group for A/B testing
     }
     
     attention = AttentionLearningLayer(config)
@@ -1483,10 +1734,12 @@ async def main():
             },
             'performance': {
                 'win_rate': 0.5 + np.random.randn() * 0.1,
-                'profit': np.random.randn() * 10
+                'profit': np.random.randn() * 10,
+                'pnl': np.random.randn() * 100
             },
             'outcome': np.random.randn(),  # Simulated outcome
-            'is_winner': np.random.rand() > 0.5
+            'is_winner': np.random.rand() > 0.5,
+            'trade_id': f"trade_{i}"
         }
         
         # Process through attention
@@ -1500,6 +1753,12 @@ async def main():
             print(f"  Observations: {state['total_observations']}")
             print(f"  Avg Processing Time: {state['avg_processing_time']:.2f}ms")
             print(f"  Learning Progress: {attention.get_learning_progress():.1%}")
+            print(f"  Validation Rejection Rate: {state['validation_rejection_rate']:.2%}")
+            
+            # Print A/B test results if available
+            ab_results = state['ab_test_results']
+            if ab_results.get('significant') is not None:
+                print(f"  A/B Test: {ab_results['message']}")
             
     # Final state
     final_state = await attention.get_attention_state()
@@ -1507,10 +1766,27 @@ async def main():
     print(f"  Phase: {final_state['phase']}")
     print(f"  Feature Importance: {final_state['feature_importance']}")
     print(f"  Performance Improvement: {final_state['performance_improvement']:.2%}")
+    print(f"  Validation Rejection Rate: {final_state['validation_rejection_rate']:.2%}")
+    
+    # A/B test results
+    ab_results = final_state['ab_test_results']
+    if 'control_win_rate' in ab_results:
+        print(f"\nA/B Test Results:")
+        print(f"  Control Win Rate: {ab_results['control_win_rate']:.2%}")
+        print(f"  Test Win Rate: {ab_results['test_win_rate']:.2%}")
+        print(f"  Statistical Significance: {ab_results['significant']}")
+        print(f"  P-value: {ab_results['p_value']:.4f}")
     
     # Save state
-    await attention.save_state('attention_state.json')
+    await attention.save_state('attention_state_enhanced.json')
 
 
 if __name__ == "__main__":
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Run example
     asyncio.run(main())
