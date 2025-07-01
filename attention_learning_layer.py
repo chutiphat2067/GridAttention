@@ -35,6 +35,9 @@ except ImportError:
     nn = None
     F = None
 
+# Import overfitting detector
+from overfitting_detector import OverfittingDetector, OverfittingSeverity
+
 # Setup logger
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,7 @@ MAX_ATTENTION_INFLUENCE = 0.3  # Maximum 30% adjustment
 LEARNING_RATE = 0.001
 ATTENTION_WINDOW_SIZE = 1000
 VALIDATION_THRESHOLD = 0.5  # Maximum 50% feature change allowed
+MIN_SAMPLES_FOR_DETECTION = 100  # Minimum samples for overfitting detection
 
 
 @dataclass
@@ -254,11 +258,33 @@ class FeatureAttention(BaseAttentionModule):
             await self._initialize_network(len(features))
             
     async def _initialize_network(self, num_features: int) -> None:
-        """Initialize attention neural network"""
-        self.attention_network = FeatureAttentionNetwork(num_features)
-        self.optimizer = torch.optim.Adam(self.attention_network.parameters(), lr=LEARNING_RATE)
+        """Initialize attention neural network with regularization"""
+        dropout_rate = 0.3  # Default dropout rate
+        
+        self.attention_network = FeatureAttentionNetwork(
+            num_features, 
+            dropout_rate=dropout_rate
+        )
+        
+        # Optimizer with weight decay
+        weight_decay = 0.01  # Default weight decay
+        self.optimizer = torch.optim.Adam(
+            self.attention_network.parameters(),
+            lr=LEARNING_RATE,
+            weight_decay=weight_decay
+        )
+        
+        # Learning rate scheduler
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 
+            mode='max', 
+            patience=20, 
+            factor=0.5,
+            min_lr=1e-6
+        )
+        
         self.is_initialized = True
-        logger.info(f"Initialized feature attention network with {num_features} features")
+        logger.info(f"Initialized feature attention network with regularization (dropout={dropout_rate})")
         
     async def calculate_weights(self, features: Dict[str, float]) -> Dict[str, float]:
         """Calculate attention weights for features"""
@@ -293,6 +319,44 @@ class FeatureAttention(BaseAttentionModule):
         self.weight_history.append(weights.copy())
         
         return weights
+        
+    async def _train_step(self, features: Dict[str, float], outcome: float) -> float:
+        """Single training step with gradient clipping"""
+        if not self.is_initialized:
+            return 0.0
+            
+        # Prepare data
+        feature_names = sorted(features.keys())
+        feature_values = [features[name] for name in feature_names]
+        normalized_values = self._normalize_features(feature_values)
+        
+        input_tensor = torch.FloatTensor(normalized_values).unsqueeze(0)
+        target_tensor = torch.FloatTensor([outcome])
+        
+        # Forward pass
+        self.optimizer.zero_grad()
+        output = self.attention_network(input_tensor)
+        
+        # Custom loss with regularization
+        attention_weights = F.softmax(output, dim=1)
+        weighted_features = attention_weights * input_tensor
+        prediction = weighted_features.sum()
+        
+        # MSE loss + L1 regularization on attention weights
+        mse_loss = F.mse_loss(prediction, target_tensor)
+        l1_reg = 0.001 * attention_weights.abs().mean()
+        loss = mse_loss + l1_reg
+        
+        # Backward pass with gradient clipping
+        loss.backward()
+        gradient_clipping = 1.0  # Default gradient clipping
+        torch.nn.utils.clip_grad_norm_(
+            self.attention_network.parameters(), 
+            gradient_clipping
+        )
+        self.optimizer.step()
+        
+        return loss.item()
         
     async def apply_weights(self, features: Dict[str, float]) -> Dict[str, float]:
         """Apply attention weights to features"""
@@ -332,6 +396,11 @@ class FeatureAttention(BaseAttentionModule):
         if not self.is_initialized:
             return
             
+        # Check for overfitting before updating
+        if await self._validate_and_check_overfitting():
+            logger.info("Skipping importance update due to overfitting detection")
+            return
+            
         # Prepare training data
         for feature_name, impact in performance_feedback.items():
             if feature_name in self.feature_stats:
@@ -360,6 +429,51 @@ class FeatureAttention(BaseAttentionModule):
                 stability_scores[name] = stability
                 
         return stability_scores
+        
+    async def _validate_and_check_overfitting(self) -> bool:
+        """Validate model and check for overfitting"""
+        if self.observation_count < MIN_SAMPLES_FOR_DETECTION:
+            return False
+            
+        # Get overfitting metrics (assume overfitting_detector is available)
+        try:
+            detection = await self.overfitting_detector.detect_overfitting()
+            
+            if detection['is_overfitting']:
+                severity = detection['severity']
+                logger.warning(f"Overfitting detected in attention layer: {severity}")
+                
+                # Take action based on severity
+                if severity == 'CRITICAL':
+                    # Reset to more conservative state
+                    await self._apply_emergency_regularization()
+                    return True
+                elif severity == 'HIGH':
+                    # Increase regularization
+                    await self._apply_emergency_regularization()
+                    return True
+                    
+        except Exception as e:
+            logger.warning(f"Overfitting detection failed: {e}")
+                
+        return False
+        
+    async def _apply_emergency_regularization(self):
+        """Apply emergency regularization when critical overfitting detected"""
+        logger.warning("Applying emergency regularization to attention layer")
+        
+        if hasattr(self, 'attention_network') and self.attention_network:
+            # Reset weights with smaller initialization
+            for layer in self.attention_network.modules():
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight, gain=0.5)
+                    if layer.bias is not None:
+                        nn.init.zeros_(layer.bias)
+                        
+            # Reduce learning rate dramatically
+            if hasattr(self, 'optimizer'):
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= 0.1
 
 
 class TemporalAttention(BaseAttentionModule):
@@ -728,18 +842,30 @@ class RegimeAttention(BaseAttentionModule):
 
 # Neural Network Components
 class FeatureAttentionNetwork(nn.Module):
-    """Neural network for feature attention"""
+    """Neural network for feature attention with enhanced regularization"""
     
-    def __init__(self, num_features: int):
+    def __init__(self, num_features: int, dropout_rate: float = 0.3):
         super().__init__()
-        self.fc1 = nn.Linear(num_features, num_features * 2)
-        self.fc2 = nn.Linear(num_features * 2, num_features)
-        self.dropout = nn.Dropout(0.1)
+        # ลดขนาด network และเพิ่ม regularization
+        hidden_size = max(num_features // 2, 16)  # ลดขนาด hidden layer
+        
+        self.fc1 = nn.Linear(num_features, hidden_size)
+        self.bn1 = nn.BatchNorm1d(hidden_size)  # เพิ่ม batch normalization
+        self.dropout1 = nn.Dropout(dropout_rate)
+        
+        self.fc2 = nn.Linear(hidden_size, num_features)
+        self.bn2 = nn.BatchNorm1d(num_features)
+        self.dropout2 = nn.Dropout(dropout_rate)
         
     def forward(self, x):
         x = F.relu(self.fc1(x))
-        x = self.dropout(x)
+        x = self.bn1(x) if x.shape[0] > 1 else x  # Skip batch norm if batch size is 1
+        x = self.dropout1(x)
+        
         x = self.fc2(x)
+        x = self.bn2(x) if x.shape[0] > 1 else x
+        x = self.dropout2(x)
+        
         return x
 
 
@@ -1065,6 +1191,10 @@ class AttentionLearningLayer:
                 # Record metrics
                 processing_time = (time.perf_counter() - start_time) * 1000  # Convert to ms
                 self.metrics.record_processing_time(processing_time)
+                
+                # Check for overfitting in feature attention
+                if hasattr(self.feature_attention, '_validate_and_check_overfitting'):
+                    await self.feature_attention._validate_and_check_overfitting()
                 
                 # Check for phase transition
                 if self.phase_controller.should_transition(self.metrics):

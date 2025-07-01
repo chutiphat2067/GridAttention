@@ -32,6 +32,7 @@ from plotly.subplots import make_subplots
 # Local imports
 from attention_learning_layer import AttentionLearningLayer, AttentionPhase
 from market_regime_detector import MarketRegime
+from overfitting_detector import OverfittingDetector, OverfittingMonitor
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -1188,6 +1189,16 @@ class PerformanceMonitor:
         self.system_monitor = SystemMonitor()
         self.stress_tester = StressTester()
         
+        # Add overfitting monitoring
+        self.overfitting_detector = OverfittingDetector()
+        self.overfitting_monitor = OverfittingMonitor(self.overfitting_detector)
+        self.overfitting_metrics = deque(maxlen=1000)
+        
+        # Enhanced metrics for overfitting detection
+        self.train_test_performance_gap = deque(maxlen=100)
+        self.model_confidence_history = deque(maxlen=1000)
+        self.parameter_change_history = deque(maxlen=100)
+        
         # State
         self._running = False
         self._monitoring_task = None
@@ -1225,10 +1236,16 @@ class PerformanceMonitor:
         self._dashboard_task = asyncio.create_task(self._dashboard_update_loop())
         self._stress_test_task = asyncio.create_task(self._stress_test_loop())
         
+        # Start overfitting monitor
+        await self.overfitting_monitor.start_monitoring()
+        
+        # Register alert handler for overfitting
+        self.overfitting_monitor.register_alert_handler(self._handle_overfitting_alert)
+        
         # Register alert handlers
         self.alert_manager.register_handler(self._handle_alert)
         
-        logger.info("Started performance monitoring")
+        logger.info("Started performance monitoring with overfitting detection")
         
     async def _stress_test_loop(self):
         """Periodic stress testing loop"""
@@ -1371,6 +1388,16 @@ class PerformanceMonitor:
             await self.metrics_store.store_attention_metrics(attention_metrics)
             self.prometheus_metrics.update_attention_metrics(attention_metrics)
             
+        # Collect overfitting metrics
+        overfitting_metrics = await self._get_overfitting_metrics()
+        self.overfitting_metrics.append(overfitting_metrics)
+        
+        # Update Prometheus metrics
+        if hasattr(self, 'prometheus_metrics'):
+            self.prometheus_metrics.overfitting_score.set(overfitting_metrics.get('overfitting_score', 0))
+            self.prometheus_metrics.train_test_gap.set(overfitting_metrics.get('performance_gap', 0))
+            self.prometheus_metrics.model_confidence.set(overfitting_metrics.get('model_confidence', 1))
+            
     async def _get_latest_trading_metrics(self) -> TradingMetrics:
         """Get latest trading metrics"""
         # This would be populated from actual trading data
@@ -1401,6 +1428,48 @@ class PerformanceMonitor:
             metrics.avg_profit_per_grid = grid_metrics['avg_profit']
             
         return metrics
+        
+    async def _get_overfitting_metrics(self) -> Dict[str, Any]:
+        """Get current overfitting metrics"""
+        detection = await self.overfitting_detector.detect_overfitting()
+        
+        metrics = {
+            'timestamp': time.time(),
+            'is_overfitting': detection['is_overfitting'],
+            'severity': detection.get('severity', 'NONE'),
+            'overfitting_score': calculate_overfitting_score(detection.get('metrics', {})),
+            'performance_gap': detection.get('metrics', {}).get('performance_gap', 0),
+            'model_confidence': 1 - detection.get('metrics', {}).get('confidence_calibration_error', 0),
+            'feature_stability': detection.get('metrics', {}).get('feature_stability', 1)
+        }
+        
+        # Track train/test gap
+        if 'details' in detection and 'performance' in detection['details']:
+            train_perf = detection['details']['performance'].get('train_win_rate', 0)
+            test_perf = detection['details']['performance'].get('live_win_rate', 0)
+            gap = abs(train_perf - test_perf)
+            self.train_test_performance_gap.append(gap)
+            
+        return metrics
+        
+    async def _handle_overfitting_alert(self, alert: Dict[str, Any]):
+        """Handle overfitting alerts"""
+        logger.warning(f"Overfitting alert: {alert['message']}")
+        
+        # Add to alert manager
+        await self.alert_manager.send_alerts([Alert(
+            alert_id=f"overfitting_{int(time.time())}",
+            level=AlertLevel.WARNING if alert['severity'] in ['LOW', 'MEDIUM'] else AlertLevel.ERROR,
+            category="model",
+            message=alert['message'],
+            details=alert['details']
+        )])
+        
+        # Take action based on severity
+        if alert['severity'] in ['HIGH', 'CRITICAL']:
+            # Notify other components to reduce risk
+            if hasattr(self, 'risk_manager'):
+                self.risk_manager.risk_reduction_mode = True
         
     async def _get_attention_metrics(self) -> AttentionMetrics:
         """Get attention system metrics"""
@@ -1492,7 +1561,7 @@ class PerformanceMonitor:
                 self.baseline_performance['baseline'].append(trade_result['pnl'])
                 
     async def get_performance_report(self) -> Dict[str, Any]:
-        """Generate comprehensive performance report"""
+        """Generate comprehensive performance report with overfitting analysis"""
         summary = await self.metrics_store.get_performance_summary()
         alerts = await self.alert_manager.get_alert_summary()
         
@@ -1507,7 +1576,10 @@ class PerformanceMonitor:
             if baseline_avg != 0:
                 attention_improvement = (attention_avg - baseline_avg) / abs(baseline_avg)
                 
-        return {
+        # Add overfitting analysis
+        overfitting_report = await self.overfitting_monitor.generate_report()
+        
+        base_report = {
             'summary': summary,
             'system_health': {
                 'cpu_usage': system_metrics.cpu_usage,
@@ -1520,6 +1592,24 @@ class PerformanceMonitor:
             'total_trades': self.metrics_store.get_total_trades(),
             'report_timestamp': time.time()
         }
+        
+        base_report['overfitting_analysis'] = {
+            'current_status': overfitting_report['risk_assessment'],
+            'detection_summary': self.overfitting_detector.get_detection_summary(),
+            'recent_metrics': list(self.overfitting_metrics)[-10:] if self.overfitting_metrics else [],
+            'recommendations': overfitting_report.get('recommendations', [])
+        }
+        
+        # Add model stability metrics
+        if self.parameter_change_history:
+            recent_changes = list(self.parameter_change_history)[-50:]
+            base_report['model_stability'] = {
+                'parameter_changes': len(recent_changes),
+                'avg_change_magnitude': np.mean([abs(c['magnitude']) for c in recent_changes]),
+                'change_frequency': len(recent_changes) / (50 * 300)  # Changes per 5-min period
+            }
+            
+        return base_report
         
     async def save_metrics(self, filepath: str):
         """Save metrics to file"""
@@ -1534,6 +1624,41 @@ class PerformanceMonitor:
             json.dump(data, f, indent=2)
             
         logger.info(f"Saved metrics to {filepath}")
+
+
+def calculate_overfitting_score(metrics: Dict[str, Any]) -> float:
+    """Calculate overfitting score from metrics"""
+    score = 0.0
+    
+    # Performance gap component
+    performance_gap = metrics.get('performance_gap', 0)
+    if performance_gap > 0.1:  # 10% gap
+        score += 0.4
+    elif performance_gap > 0.05:  # 5% gap
+        score += 0.2
+        
+    # Feature stability component
+    feature_stability = metrics.get('feature_stability', 1)
+    if feature_stability < 0.7:
+        score += 0.3
+    elif feature_stability < 0.8:
+        score += 0.15
+        
+    # Confidence calibration component
+    confidence_error = metrics.get('confidence_calibration_error', 0)
+    if confidence_error > 0.2:
+        score += 0.3
+    elif confidence_error > 0.1:
+        score += 0.15
+        
+    # Model complexity changes component
+    complexity_change = metrics.get('complexity_change', 0)
+    if complexity_change > 0.5:
+        score += 0.2
+    elif complexity_change > 0.3:
+        score += 0.1
+        
+    return min(score, 1.0)  # Cap at 1.0
 
 
 # Example usage

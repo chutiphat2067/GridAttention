@@ -29,6 +29,7 @@ from market_regime_detector import MarketRegimeDetector, MarketRegime
 from grid_strategy_selector import GridStrategySelector
 from risk_management_system import RiskManagementSystem
 from performance_monitor import PerformanceMonitor, TradingMetrics
+from overfitting_detector import OverfittingDetector, OverfittingSeverity
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -39,9 +40,10 @@ FEEDBACK_INTERVAL = 60  # seconds
 MIN_SAMPLES_FOR_LEARNING = 200  # Increased from 100
 CONFIDENCE_THRESHOLD = 0.8  # Increased from 0.7
 IMPROVEMENT_THRESHOLD = 0.02  # 2% improvement
-LEARNING_RATE = 0.005  # Reduced from 0.01
-DECAY_RATE = 0.95
-MAX_ADJUSTMENT = 0.2  # Reduced from 0.3 (20% max adjustment)
+LEARNING_RATE = 0.001  # ลดจาก 0.005
+DECAY_RATE = 0.99  # เพิ่มจาก 0.95 (slower decay)
+MAX_ADJUSTMENT = 0.1  # ลดจาก 0.2 (10% max adjustment)
+ADJUSTMENT_COOLDOWN = 600  # เพิ่มเป็น 10 นาที
 OPTIMIZATION_INTERVAL = 7200  # 2 hours (increased from 1 hour)
 INSIGHT_WINDOW = 1000  # Number of trades for insight extraction
 RECOVERY_CHECKLIST_ITEMS = [
@@ -81,6 +83,53 @@ class ImprovementAction(Enum):
     RISK_REDUCTION = "risk_reduction"
     FEATURE_REWEIGHT = "feature_reweight"
     REGIME_RECALIBRATION = "regime_recalibration"
+
+
+class AdjustmentValidator:
+    """Validate parameter adjustments to prevent overfitting"""
+    
+    def __init__(self):
+        self.adjustment_history = deque(maxlen=100)
+        self.parameter_stability = defaultdict(list)
+        
+    def validate_adjustment(self, param: str, current: float, proposed: float) -> bool:
+        """Validate if parameter adjustment is safe"""
+        # Check adjustment magnitude
+        change_ratio = abs(proposed - current) / current if current != 0 else float('inf')
+        if change_ratio > 0.2:  # 20% max change
+            return False
+            
+        # Check adjustment frequency
+        recent_adjustments = [
+            adj for adj in self.adjustment_history
+            if adj['parameter'] == param and 
+            time.time() - adj['timestamp'] < ADJUSTMENT_COOLDOWN
+        ]
+        
+        if len(recent_adjustments) > 2:
+            return False
+            
+        # Check for oscillation
+        self.parameter_stability[param].append(proposed)
+        if len(self.parameter_stability[param]) > 10:
+            values = self.parameter_stability[param][-10:]
+            changes = np.diff(values)
+            sign_changes = np.sum(np.diff(np.sign(changes)) != 0)
+            
+            # Too many direction changes indicate instability
+            if sign_changes > len(changes) * 0.6:
+                return False
+                
+        return True
+        
+    def record_adjustment(self, param: str, old_value: float, new_value: float):
+        """Record adjustment for tracking"""
+        self.adjustment_history.append({
+            'parameter': param,
+            'old_value': old_value,
+            'new_value': new_value,
+            'timestamp': time.time()
+        })
 
 
 @dataclass
@@ -284,32 +333,42 @@ class RecoveryManager:
 
 
 class GradualOptimizer:
-    """Implement gradual parameter optimization"""
+    """Implement gradual parameter optimization with overfitting prevention"""
     
     def __init__(self, max_adjustment: float = MAX_ADJUSTMENT):
         self.max_adjustment = max_adjustment
         self.optimization_history = deque(maxlen=100)
         self.parameter_trajectories = defaultdict(list)
+        self.overfitting_detector = OverfittingDetector()
         
     def calculate_gradual_adjustment(self, 
                                    current_value: float, 
                                    target_value: float,
                                    confidence: float) -> float:
-        """Calculate gradual adjustment towards target"""
+        """Calculate gradual adjustment with overfitting check"""
         
+        # Check for overfitting in parameter trajectory
+        if self._is_parameter_overfitting(current_value):
+            logger.warning("Parameter overfitting detected, reducing adjustment")
+            confidence *= 0.5
+            
         # Calculate desired change
         desired_change = target_value - current_value
         
-        # Apply confidence scaling
-        confidence_factor = min(confidence, 0.9)  # Cap at 90%
+        # Apply more conservative confidence scaling
+        confidence_factor = min(confidence * 0.8, 0.7)  # Max 70% confidence
         
-        # Apply maximum adjustment limit
-        max_change = current_value * self.max_adjustment
+        # Apply stricter maximum adjustment limit
+        max_change = current_value * (self.max_adjustment / 2)  # Half the max adjustment
         
         # Calculate actual adjustment
         actual_change = desired_change * confidence_factor
         actual_change = np.clip(actual_change, -max_change, max_change)
         
+        # Check adjustment frequency
+        if self._is_adjusting_too_frequently():
+            actual_change *= 0.5  # Further reduce if adjusting too often
+            
         # Record trajectory
         self.parameter_trajectories[f"param_{len(self.optimization_history)}"].append({
             'current': current_value,
@@ -343,6 +402,38 @@ class GradualOptimizer:
             return 0.0
             
         return value_diff / time_diff
+        
+    def _is_parameter_overfitting(self, current_value: float) -> bool:
+        """Check if parameter is overfitting (oscillating)"""
+        # Check recent parameter history
+        recent_values = []
+        for trajectory in self.parameter_trajectories.values():
+            if trajectory:
+                recent_values.extend([t['current'] for t in trajectory[-10:]])
+                
+        if len(recent_values) < 10:
+            return False
+            
+        # Check for oscillation
+        changes = np.diff(recent_values)
+        sign_changes = np.sum(np.diff(np.sign(changes)) != 0)
+        
+        # If changing direction too often, it's overfitting
+        return sign_changes > len(changes) * 0.6
+        
+    def _is_adjusting_too_frequently(self) -> bool:
+        """Check if adjustments are too frequent"""
+        recent_adjustments = []
+        
+        for trajectory in self.parameter_trajectories.values():
+            if trajectory:
+                recent = [t for t in trajectory if time.time() - t['timestamp'] < ADJUSTMENT_COOLDOWN]
+                recent_adjustments.extend(recent)
+                
+        return len(recent_adjustments) > 3  # More than 3 adjustments in cooldown period
+
+
+class FeedbackProcessor:
     """Process feedback and extract insights"""
     
     def __init__(self):
@@ -852,9 +943,14 @@ class FeedbackLoop:
         self.insight_history = deque(maxlen=1000)
         self.optimization_history = deque(maxlen=100)
         
-        # Learning parameters
+        # More conservative learning parameters
         self.learning_rate = LEARNING_RATE
-        self.decay_rate = DECAY_RATE
+        self.decay_rate = 0.99  # เพิ่มจาก 0.95 (slower decay)
+        self.min_confidence_for_adjustment = 0.8  # เพิ่มจาก 0.7
+        
+        # Overfitting prevention
+        self.adjustment_validator = AdjustmentValidator()
+        self.recent_adjustments = deque(maxlen=50)
         
         # State
         self._running = False
@@ -1099,11 +1195,16 @@ class FeedbackLoop:
                 logger.info("Temporarily reduced position size limit")
                 
     async def _apply_optimizations(self, result: OptimizationResult) -> bool:
-        """Apply optimization results to system components with gradual adjustment"""
+        """Apply optimization results with validation"""
         try:
-            # Check if in recovery mode
-            if self._in_recovery:
-                logger.warning("In recovery mode, skipping optimizations")
+            # Validate optimizations first
+            if not await self._validate_optimizations(result):
+                logger.warning(f"Optimization {result.optimization_id} failed validation")
+                return False
+                
+            # Check confidence
+            if result.validation_metrics.get('confidence', 0) < self.min_confidence_for_adjustment:
+                logger.info(f"Optimization confidence too low: {result.validation_metrics.get('confidence', 0)}")
                 return False
                 
             # Apply parameter adjustments gradually
@@ -1111,36 +1212,37 @@ class FeedbackLoop:
                 for param, target_value in result.adjustments['parameters'].items():
                     current_value = self.optimization_engine.current_parameters.get(param, 1.0)
                     
-                    # Calculate gradual adjustment
+                    # Calculate gradual adjustment with extra validation
                     adjusted_value = self.gradual_optimizer.calculate_gradual_adjustment(
                         current_value,
                         target_value,
-                        result.validation_metrics.get('confidence', 0.5)
+                        result.validation_metrics.get('confidence', 0.5) * 0.8  # Extra safety factor
                     )
                     
-                    # Check if adjustment is safe
-                    if abs(adjusted_value - current_value) / current_value > 0.5:
-                        logger.warning(f"Adjustment for {param} too large, limiting to 20%")
-                        adjusted_value = current_value * 1.2 if adjusted_value > current_value else current_value * 0.8
+                    # Double-check adjustment is reasonable
+                    if abs(adjusted_value - current_value) / current_value > 0.05:  # Max 5% change
+                        logger.warning(f"Adjustment for {param} too large, capping at 5%")
+                        adjusted_value = current_value * 1.05 if adjusted_value > current_value else current_value * 0.95
                         
                     await self._apply_parameter(param, adjusted_value)
                     
-            # Apply strategy changes
+                    # Record adjustment
+                    self.recent_adjustments.append({
+                        'parameter': param,
+                        'from': current_value,
+                        'to': adjusted_value,
+                        'timestamp': time.time()
+                    })
+                    
+            # Apply strategy changes more conservatively
             if 'strategy' in result.adjustments:
-                await self._apply_strategy_change(result.adjustments['strategy'])
+                await self._apply_strategy_change_conservative(result.adjustments['strategy'])
                 
-            # Apply risk adjustments
-            if 'risk' in result.adjustments:
-                await self._apply_risk_adjustment(result.adjustments['risk'])
-                
-            logger.info(f"Applied optimization {result.optimization_id} with gradual adjustments")
+            logger.info(f"Applied optimization {result.optimization_id} with conservative adjustments")
             return True
             
         except Exception as e:
             logger.error(f"Failed to apply optimizations: {e}")
-            
-            # Trigger recovery if optimization fails
-            await self._enter_recovery_mode("Optimization failure")
             return False
             
     async def _enter_recovery_mode(self, reason: str):
@@ -1210,6 +1312,42 @@ class FeedbackLoop:
             multiplier = risk_adjustment['position_size_multiplier']
             # This would adjust risk parameters
             logger.info(f"Applied risk multiplier: {multiplier}")
+            
+    async def _validate_optimizations(self, result: OptimizationResult) -> bool:
+        """Validate optimization results before applying"""
+        # Check if adjustments are too aggressive
+        if 'parameters' in result.adjustments:
+            for param, target in result.adjustments['parameters'].items():
+                current = self.optimization_engine.current_parameters.get(param, 1.0)
+                change_ratio = abs(target - current) / current
+                
+                if change_ratio > 0.2:  # 20% change is too much
+                    logger.warning(f"Optimization suggests {change_ratio:.1%} change for {param}, too aggressive")
+                    return False
+                    
+        # Check recent adjustment frequency
+        recent_param_adjustments = [
+            adj for adj in self.recent_adjustments
+            if time.time() - adj['timestamp'] < ADJUSTMENT_COOLDOWN
+        ]
+        
+        if len(recent_param_adjustments) > 2:
+            logger.warning("Too many recent adjustments, skipping to prevent overfitting")
+            return False
+            
+        return True
+        
+    async def _apply_strategy_change_conservative(self, strategy_change: Dict[str, str]):
+        """Apply strategy change with validation"""
+        if 'strategy_selector' in self.components:
+            # Don't switch strategies too frequently
+            last_switch = getattr(self, 'last_strategy_switch', 0)
+            if time.time() - last_switch < 3600:  # 1 hour minimum between switches
+                logger.info("Strategy switch blocked due to cooldown")
+                return
+                
+            logger.info(f"Conservative strategy switch: {strategy_change['from']} to {strategy_change['to']}")
+            self.last_strategy_switch = time.time()
             
     async def process_feedback(self, performance_data: Dict[str, Any]):
         """Process immediate feedback (called by components)"""

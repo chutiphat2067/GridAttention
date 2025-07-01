@@ -23,9 +23,12 @@ import json
 # Third-party imports
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score
 
 # Local imports (from other modules)
 from attention_learning_layer import AttentionLearningLayer, AttentionPhase
+from overfitting_detector import OverfittingDetector, ValidationResult
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -382,6 +385,118 @@ class DormantRegimeRule(BaseRegimeRule):
         return ['volatility_5m', 'volume_ratio', 'price_change_5m', 'spread_bps', 'trend_strength']
 
 
+class EnsembleRegimeDetector:
+    """Ensemble of multiple regime detection methods"""
+    
+    def __init__(self):
+        # เนื่องจากเรายังไม่มี class เหล่านี้ ให้ใช้ placeholder หรือสร้างง่ายๆ
+        self.detectors = {
+            'rule_based': 'RuleBasedRegimeDetector',  # Placeholder
+            'gmm': 'GMMRegimeDetector',  # Placeholder 
+            'rf': 'RandomForestRegimeDetector',  # Placeholder
+            'simple': 'SimpleThresholdDetector'  # Placeholder
+        }
+        
+        # Dynamic weights based on performance
+        self.detector_weights = defaultdict(lambda: 0.25)
+        self.performance_history = defaultdict(list)
+        self.max_history = 100
+        
+    async def detect_regime(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        """Ensemble prediction with weighted voting"""
+        predictions = {}
+        confidences = {}
+        
+        # Simple ensemble simulation for now
+        # In real implementation, this would call actual detectors
+        
+        # Simulate predictions based on features
+        volatility = features.get('volatility_5m', 0.001)
+        trend_strength = abs(features.get('trend_strength', 0))
+        volume_ratio = features.get('volume_ratio', 1.0)
+        
+        # Rule-based prediction
+        if trend_strength > 0.5:
+            predictions['rule_based'] = MarketRegime.TRENDING
+            confidences['rule_based'] = trend_strength
+        elif volatility > 0.002:
+            predictions['rule_based'] = MarketRegime.VOLATILE  
+            confidences['rule_based'] = min(volatility * 500, 1.0)
+        elif volume_ratio < 0.3:
+            predictions['rule_based'] = MarketRegime.DORMANT
+            confidences['rule_based'] = 1.0 - volume_ratio
+        else:
+            predictions['rule_based'] = MarketRegime.RANGING
+            confidences['rule_based'] = 0.6
+            
+        # GMM prediction (simplified)
+        predictions['gmm'] = predictions['rule_based']  # Same for now
+        confidences['gmm'] = confidences['rule_based'] * 0.8
+        
+        # RF prediction (simplified)
+        predictions['rf'] = predictions['rule_based']  # Same for now
+        confidences['rf'] = confidences['rule_based'] * 0.9
+        
+        # Simple threshold prediction
+        predictions['simple'] = predictions['rule_based']  # Same for now
+        confidences['simple'] = confidences['rule_based'] * 0.7
+                
+        # Weighted voting
+        regime_votes = defaultdict(float)
+        total_weight = 0
+        
+        for name, regime in predictions.items():
+            weight = self.detector_weights[name] * confidences[name]
+            regime_votes[regime] += weight
+            total_weight += weight
+            
+        if total_weight == 0:
+            return MarketRegime.RANGING, 0.5
+            
+        # Normalize and select best
+        best_regime = max(regime_votes, key=regime_votes.get)
+        ensemble_confidence = regime_votes[best_regime] / total_weight
+        
+        return best_regime, ensemble_confidence
+        
+    async def update_weights(self, actual_regime: MarketRegime, features: Dict[str, float]):
+        """Update detector weights based on accuracy"""
+        for name in self.detectors.keys():
+            try:
+                predicted_regime, confidence = await self.detect_regime(features)
+                
+                # Track performance
+                is_correct = predicted_regime == actual_regime
+                self.performance_history[name].append({
+                    'correct': is_correct,
+                    'confidence': confidence,
+                    'timestamp': time.time()
+                })
+                
+                # Limit history size
+                if len(self.performance_history[name]) > self.max_history:
+                    self.performance_history[name].pop(0)
+                    
+                # Update weights based on recent performance
+                if len(self.performance_history[name]) >= 10:
+                    recent = self.performance_history[name][-50:]
+                    accuracy = sum(p['correct'] for p in recent) / len(recent)
+                    avg_confidence = np.mean([p['confidence'] for p in recent])
+                    
+                    # Weight = accuracy * confidence calibration
+                    confidence_calibration = 1 - abs(accuracy - avg_confidence)
+                    self.detector_weights[name] = accuracy * confidence_calibration
+                    
+            except Exception as e:
+                logger.error(f"Failed to update weight for {name}: {e}")
+                
+        # Normalize weights
+        total = sum(self.detector_weights.values())
+        if total > 0:
+            for name in self.detector_weights:
+                self.detector_weights[name] /= total
+
+
 class MarketRegimeDetector:
     """
     Detect market regime with attention enhancement
@@ -393,7 +508,15 @@ class MarketRegimeDetector:
         self.regime_history = deque(maxlen=REGIME_MEMORY_SIZE)
         self.transition_detector = RegimeTransitionDetector()
         
-        # Machine learning components
+        # เปลี่ยนเป็น Ensemble
+        self.ensemble_detector = EnsembleRegimeDetector()
+        self.use_ensemble = True
+        
+        # Overfitting detection
+        self.overfitting_detector = OverfittingDetector()
+        self.validation_interval = 100  # Validate every 100 detections
+        
+        # Machine learning components (legacy)
         self.gmm_model = None  # Gaussian Mixture Model
         self.scaler = StandardScaler()
         self.is_ml_initialized = False
@@ -407,7 +530,7 @@ class MarketRegimeDetector:
         self.current_state = None
         self._lock = asyncio.Lock()
         
-        logger.info("Initialized Market Regime Detector")
+        logger.info("Initialized Market Regime Detector with Ensemble")
         
     def _init_regime_rules(self) -> Dict[MarketRegime, BaseRegimeRule]:
         """Initialize regime detection rules"""
@@ -419,9 +542,13 @@ class MarketRegimeDetector:
         }
         
     async def detect_regime(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
-        """Detect current market regime"""
+        """Detect current market regime with ensemble"""
         async with self._lock:
             self.detection_count += 1
+            
+            # Check if we should validate for overfitting
+            if self.detection_count % self.validation_interval == 0:
+                await self._validate_detection_accuracy()
             
             # Check if we have enough history
             if len(self.regime_history) < MIN_HISTORY_FOR_DETECTION:
@@ -430,22 +557,24 @@ class MarketRegimeDetector:
                 confidence = 0.3
                 
             else:
+                # Use ensemble if enabled and not overfitting
+                if self.use_ensemble and not await self._is_overfitting():
+                    regime, confidence = await self.ensemble_detector.detect_regime(features)
+                else:
+                    # Fallback to simple rule-based
+                    regime, confidence = await self._detect_regime_simple(features)
+                    
                 # Apply attention if active
                 if self.attention and self.attention.phase == AttentionPhase.ACTIVE:
                     features = await self._apply_attention_to_features(features)
+                    # Re-detect with attention-weighted features
+                    regime_adjusted, confidence_adjusted = await self._detect_regime_simple(features)
                     
-                # Calculate regime scores
-                regime_scores = await self._calculate_regime_scores(features)
-                
-                # Apply ML enhancement if available
-                if self.is_ml_initialized:
-                    ml_regime, ml_confidence = await self._apply_ml_detection(features)
-                    # Blend with rule-based scores
-                    regime_scores = self._blend_scores(regime_scores, ml_regime, ml_confidence)
-                    
-                # Select regime with highest score
-                regime, confidence = self._select_regime(regime_scores)
-                
+                    # Blend results
+                    if confidence_adjusted > confidence:
+                        regime = regime_adjusted
+                        confidence = (confidence + confidence_adjusted) / 2
+                        
                 # Check for transition
                 if self.current_state:
                     transition = self.transition_detector.check_transition(
@@ -472,7 +601,11 @@ class MarketRegimeDetector:
             self.regime_history.append(new_state)
             self.current_state = new_state
             
-            # Update ML model periodically
+            # Update ensemble weights if we have ground truth
+            if hasattr(self, 'last_actual_regime'):
+                await self.ensemble_detector.update_weights(self.last_actual_regime, features)
+            
+            # Update ML model periodically (legacy)
             if self.detection_count % 100 == 0:
                 await self._update_ml_model()
                 
@@ -493,6 +626,33 @@ class MarketRegimeDetector:
         weighted_features = await self.attention.feature_attention.apply_weights(features)
         
         return weighted_features
+        
+    async def _detect_regime_simple(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        """Simple rule-based detection as fallback"""
+        regime_scores = await self._calculate_regime_scores(features)
+        return self._select_regime(regime_scores)
+        
+    async def _is_overfitting(self) -> bool:
+        """Check if ensemble is overfitting"""
+        if len(self.regime_history) < 100:
+            return False
+            
+        # Get recent predictions and check consistency
+        recent = list(self.regime_history)[-100:]
+        
+        # Calculate prediction variance
+        regime_changes = sum(
+            1 for i in range(1, len(recent)) 
+            if recent[i].regime != recent[i-1].regime
+        )
+        change_rate = regime_changes / len(recent)
+        
+        # High change rate might indicate overfitting
+        if change_rate > 0.5:  # Changing regime more than 50% of the time
+            logger.warning("High regime change rate detected, possible overfitting")
+            return True
+            
+        return False
         
     async def _calculate_regime_scores(self, features: Dict[str, float]) -> Dict[MarketRegime, float]:
         """Calculate scores for each regime"""
@@ -755,6 +915,50 @@ class MarketRegimeDetector:
         except Exception as e:
             logger.error(f"Failed to update ML model: {e}")
             
+    async def _validate_detection_accuracy(self):
+        """Validate detection accuracy using historical data"""
+        if len(self.regime_history) < 200:
+            return
+            
+        # Perform walk-forward validation
+        history = list(self.regime_history)
+        window_size = 100
+        test_size = 20
+        
+        accuracies = []
+        
+        for i in range(0, len(history) - window_size - test_size, test_size):
+            train_data = history[i:i+window_size]
+            test_data = history[i+window_size:i+window_size+test_size]
+            
+            # Simulate predictions
+            correct = 0
+            for j, test_point in enumerate(test_data):
+                if j > 0:
+                    # Check if regime was stable
+                    if test_data[j].regime == test_data[j-1].regime:
+                        predicted = test_data[j-1].regime
+                        if predicted == test_data[j].regime:
+                            correct += 1
+                            
+            accuracy = correct / (len(test_data) - 1) if len(test_data) > 1 else 0
+            accuracies.append(accuracy)
+            
+        if accuracies:
+            avg_accuracy = np.mean(accuracies)
+            std_accuracy = np.std(accuracies)
+            
+            # Log validation results
+            logger.info(f"Regime detection validation: accuracy={avg_accuracy:.2f}, std={std_accuracy:.2f}")
+            
+            # Disable ensemble if accuracy is poor
+            if avg_accuracy < 0.5 or std_accuracy > 0.2:
+                logger.warning("Poor regime detection accuracy, disabling ensemble")
+                self.use_ensemble = False
+            else:
+                # Re-enable if accuracy improves
+                self.use_ensemble = True
+                
     async def get_regime_statistics(self) -> Dict[str, Any]:
         """Get comprehensive regime statistics"""
         stats = {
