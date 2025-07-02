@@ -1682,30 +1682,30 @@ class AttentionLearningLayer:
         logger.info(f"Saved attention state to {filepath}")
         
     async def load_state(self, filepath: str) -> None:
-        """Load attention state from file"""
-        with open(filepath, 'r') as f:
-            state = json.load(f)
+            """Load attention state from file"""
+            with open(filepath, 'r') as f:
+                state = json.load(f)
             
-        async with self._lock:
-            # Restore phase
-            self.phase = AttentionPhase(state['phase'])
-            self.metrics.phase = self.phase
+            async with self._lock:
+                # Restore phase
+                self.phase = AttentionPhase(state['phase'])
+                self.metrics.phase = self.phase
             
-            # Restore metrics
-            self.metrics.total_observations = state['metrics']['total_observations']
-            self.metrics.shadow_calculations = state['metrics']['shadow_calculations']
-            self.metrics.active_applications = state['metrics']['active_applications']
+                # Restore metrics
+                self.metrics.total_observations = state['metrics']['total_observations']
+                self.metrics.shadow_calculations = state['metrics']['shadow_calculations']
+                self.metrics.active_applications = state['metrics']['active_applications']
             
-            if 'regularization_metrics' in state['metrics']:
-                self.metrics.regularization_metrics = state['metrics']['regularization_metrics']
-            if 'overfitting_detections' in state['metrics']:
-                self.metrics.overfitting_detections = state['metrics']['overfitting_detections']
+                if 'regularization_metrics' in state['metrics']:
+                    self.metrics.regularization_metrics = state['metrics']['regularization_metrics']
+                if 'overfitting_detections' in state['metrics']:
+                    self.metrics.overfitting_detections = state['metrics']['overfitting_detections']
             
-            # Restore attention states
-            self.feature_attention.attention_weights = state['feature_attention']['weights']
-            self.temporal_attention.temporal_weights = state['temporal_attention']['weights']
+                # Restore attention states
+                self.feature_attention.attention_weights = state['feature_attention']['weights']
+                self.temporal_attention.temporal_weights = state['temporal_attention']['weights']
             
-            logger.info(f"Loaded attention state from {filepath}")
+                logger.info(f"Loaded attention state from {filepath}")
 
 
 # Example usage
@@ -1796,6 +1796,77 @@ async def main():
 
 
     async def health_check(self) -> Dict[str, Any]:
+            """Check component health"""
+            return {
+                'healthy': True,
+                'is_running': getattr(self, 'is_running', True),
+                'error_count': getattr(self, 'error_count', 0),
+                'last_error': getattr(self, 'last_error', None)
+            }
+
+    async def is_healthy(self) -> bool:
+            """Quick health check"""
+            health = await self.health_check()
+            return health.get('healthy', True)
+
+    async def recover(self) -> bool:
+            """Recover from failure"""
+            try:
+                self.error_count = 0
+                self.last_error = None
+                return True
+            except Exception as e:
+                print(f"Recovery failed: {e}")
+                return False
+
+    def get_state(self) -> Dict[str, Any]:
+            """Get component state for checkpointing"""
+            return {
+                'class': self.__class__.__name__,
+                'timestamp': time.time() if 'time' in globals() else 0
+            }
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+            """Load component state from checkpoint"""
+            pass
+
+    async def get_latest_data(self):
+            """Get latest market data - fix for missing method"""
+            if hasattr(self, 'market_data_buffer') and self.market_data_buffer:
+                return self.market_data_buffer[-1]
+            # Return mock data if no real data
+            return {
+                'symbol': 'BTC/USDT',
+                'price': 50000,
+                'volume': 1.0,
+                'timestamp': time.time()
+            }
+
+    async def health_check(self) -> Dict[str, Any]:
+            """Check component health"""
+            return {
+                'healthy': True,
+                'is_running': getattr(self, 'is_running', True),
+                'error_count': getattr(self, 'error_count', 0),
+                'last_error': getattr(self, 'last_error', None)
+            }
+
+    async def is_healthy(self) -> bool:
+            """Quick health check"""
+            health = await self.health_check()
+            return health.get('healthy', True)
+
+    async def recover(self) -> bool:
+            """Recover from failure"""
+            try:
+                self.error_count = 0
+                self.last_error = None
+                return True
+            except Exception as e:
+                print(f"Recovery failed: {e}")
+                return False
+
+    async def health_check(self) -> Dict[str, Any]:
         """Check component health"""
         return {
             'healthy': True,
@@ -1818,29 +1889,6 @@ async def main():
         except Exception as e:
             print(f"Recovery failed: {e}")
             return False
-
-    def get_state(self) -> Dict[str, Any]:
-        """Get component state for checkpointing"""
-        return {
-            'class': self.__class__.__name__,
-            'timestamp': time.time() if 'time' in globals() else 0
-        }
-
-    def load_state(self, state: Dict[str, Any]) -> None:
-        """Load component state from checkpoint"""
-        pass
-
-    async def get_latest_data(self):
-        """Get latest market data - fix for missing method"""
-        if hasattr(self, 'market_data_buffer') and self.market_data_buffer:
-            return self.market_data_buffer[-1]
-        # Return mock data if no real data
-        return {
-            'symbol': 'BTC/USDT',
-            'price': 50000,
-            'volume': 1.0,
-            'timestamp': time.time()
-        }
 if __name__ == "__main__":
     # Set up logging
     logging.basicConfig(

@@ -1,6 +1,5 @@
 import ast
 import os
-import time
 
 def add_missing_methods(filepath, methods_to_add):
     """Add missing methods to a Python class file"""
@@ -22,11 +21,9 @@ def add_missing_methods(filepath, methods_to_add):
     
     if additions:
         # Add imports if needed
-        if 'import time' not in content:
-            content = 'import time\n' + content
-        if 'import asyncio' not in content:
+        if 'asyncio' not in content:
             content = 'import asyncio\n' + content
-        if 'from typing import Dict, Any, Optional' not in content:
+        if 'typing' not in content:
             content = 'from typing import Dict, Any, Optional\n' + content
         
         # Find last method or class definition
@@ -96,20 +93,7 @@ standard_methods = {
     'load_state': '''
     def load_state(self, state: Dict[str, Any]) -> None:
         """Load component state from checkpoint"""
-        pass''',
-        
-    'get_latest_data': '''
-    async def get_latest_data(self):
-        """Get latest market data - fix for missing method"""
-        if hasattr(self, 'market_data_buffer') and self.market_data_buffer:
-            return self.market_data_buffer[-1]
-        # Return mock data if no real data
-        return {
-            'symbol': 'BTC/USDT',
-            'price': 50000,
-            'volume': 1.0,
-            'timestamp': time.time()
-        }'''
+        pass'''
 }
 
 # Fix each component
@@ -121,8 +105,7 @@ components = [
     'execution_engine.py',
     'performance_monitor.py',
     'overfitting_detector.py',
-    'feedback_loop.py',
-    'market_data_input.py'  # Add this one specifically
+    'feedback_loop.py'
 ]
 
 for component in components:

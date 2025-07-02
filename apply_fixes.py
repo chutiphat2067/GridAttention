@@ -41,4 +41,5 @@ async def fix_system():
             health = await comp.health_check()
             print(f"{name}: {'✓' if health.get('healthy') else '✗'}")
 
-asyncio.run(fix_system())
+if __name__ == "__main__":
+    asyncio.run(fix_system())

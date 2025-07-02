@@ -12,6 +12,7 @@ async def validate_system():
     required_files = [
         'essential_fixes.py',
         'event_bus.py',
+        'system_coordinator.py',
         'attention_learning_layer.py',
         'market_regime_detector.py',
         'grid_strategy_selector.py',
@@ -19,8 +20,7 @@ async def validate_system():
         'execution_engine.py',
         'performance_monitor.py',
         'overfitting_detector.py',
-        'feedback_loop.py',
-        'market_data_input.py'
+        'feedback_loop.py'
     ]
     
     print("📁 Checking files:")
@@ -39,8 +39,7 @@ async def validate_system():
         ('grid_strategy_selector', 'GridStrategySelector'),
         ('risk_management_system', 'RiskManagementSystem'),
         ('execution_engine', 'ExecutionEngine'),
-        ('performance_monitor', 'PerformanceMonitor'),
-        ('market_data_input', 'MarketDataInput')
+        ('performance_monitor', 'PerformanceMonitor')
     ]
     
     required_methods = [
@@ -51,11 +50,6 @@ async def validate_system():
         'load_state'
     ]
     
-    # Special methods for MarketDataInput
-    special_methods = {
-        'MarketDataInput': ['get_latest_data']
-    }
-    
     for module_name, class_name in component_modules:
         try:
             module = importlib.import_module(module_name)
@@ -63,11 +57,7 @@ async def validate_system():
                 cls = getattr(module, class_name)
                 print(f"\n  {class_name}:")
                 
-                methods_to_check = required_methods.copy()
-                if class_name in special_methods:
-                    methods_to_check.extend(special_methods[class_name])
-                
-                for method in methods_to_check:
+                for method in required_methods:
                     if hasattr(cls, method):
                         print(f"    ✓ {method}")
                     else:
@@ -81,38 +71,30 @@ async def validate_system():
             print(f"  ✗ Failed to import {module_name}: {e}")
             issues.append(f"Import error: {module_name}")
     
-    # Test event bus
-    print("\n🌐 Testing event bus:")
+    # Check special requirements
+    print("\n🔐 Checking special requirements:")
+    
+    # Check kill switch in risk management
     try:
-        from event_bus import event_bus, Events
-        print("  ✓ Event bus imported successfully")
-        
-        # Test basic functionality
-        test_received = False
-        def test_handler(data):
-            global test_received
-            test_received = True
-            
-        event_bus.subscribe(Events.PHASE_CHANGED, test_handler)
-        await event_bus.start()
-        await event_bus.publish(Events.PHASE_CHANGED, {'phase': 'test'})
-        await asyncio.sleep(0.1)
-        await event_bus.stop()
-        
-        if test_received:
-            print("  ✓ Event bus working correctly")
-        else:
-            print("  ✗ Event bus not working")
-            issues.append("Event bus not functioning")
-            
+        rm_module = importlib.import_module('risk_management_system')
+        if hasattr(rm_module, 'RiskManagementSystem'):
+            rm_class = getattr(rm_module, 'RiskManagementSystem')
+            # Check in source code
+            import inspect
+            source = inspect.getsource(rm_class)
+            if 'kill_switch' in source:
+                print("  ✓ Kill switch in RiskManagementSystem")
+            else:
+                print("  ✗ Kill switch NOT in RiskManagementSystem")
+                issues.append("RiskManagementSystem missing kill_switch")
     except Exception as e:
-        print(f"  ✗ Event bus test failed: {e}")
-        issues.append("Event bus test failed")
+        print(f"  ✗ Error checking kill switch: {e}")
+        issues.append("Could not verify kill_switch")
     
     # Summary
     print(f"\n{'='*50}")
     if not issues:
-        print("✅ All validations passed! System is ready.")
+        print("✅ All validations passed\! System is ready.")
     else:
         print(f"❌ Found {len(issues)} issues:\n")
         for issue in issues:

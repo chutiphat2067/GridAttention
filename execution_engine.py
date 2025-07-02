@@ -1508,6 +1508,49 @@ class ExecutionEngine:
             'fee_optimization': fee_summary,
             'validation': validation_stats
         }
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check component health"""
+        return {
+            'healthy': self._running and len(self._workers) > 0,
+            'is_running': self._running,
+            'workers': len(self._workers),
+            'active_orders': len(self.active_orders),
+            'error_count': getattr(self, 'error_count', 0),
+            'last_error': getattr(self, 'last_error', None)
+        }
+
+    async def is_healthy(self) -> bool:
+        """Quick health check"""
+        health = await self.health_check()
+        return health.get('healthy', True)
+
+    async def recover(self) -> bool:
+        """Recover from failure"""
+        try:
+            self.error_count = 0
+            self.last_error = None
+            # Restart if needed
+            if not self._running:
+                await self.start()
+            return True
+        except Exception as e:
+            logger.error(f"Recovery failed: {e}")
+            return False
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get component state for checkpointing"""
+        return {
+            'class': self.__class__.__name__,
+            'timestamp': time.time(),
+            'running': self._running,
+            'active_orders': len(self.active_orders),
+            'workers': len(self._workers)
+        }
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+        """Load component state from checkpoint"""
+        pass
 
 
 class ExecutionStrategy:
@@ -1812,6 +1855,7 @@ async def main():
        # Stop engine
        await engine.stop()
        print("\nExecution engine stopped")
+
 
 if __name__ == "__main__":
    asyncio.run(main())
