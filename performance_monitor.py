@@ -2133,13 +2133,13 @@ class PerformanceMonitor:
             self.system_monitor.record_latency('execution', trade_result['execution_latency'])
             
         # Track baseline vs attention performance
-        if self.attention and self.attention.phase != AttentionPhase.LEARNING:
+        if self.attention and hasattr(self.attention, 'phase') and self.attention.phase != AttentionPhase.LEARNING:
             await self._track_attention_performance(trade_result)
             
     async def _track_attention_performance(self, trade_result: Dict[str, Any]):
         """Track attention system performance"""
         if 'pnl' in trade_result:
-            if self.attention.phase == AttentionPhase.ACTIVE:
+            if hasattr(self.attention, 'phase') and self.attention.phase == AttentionPhase.ACTIVE:
                 if 'attention' not in self.attention_performance:
                     self.attention_performance['attention'] = []
                 self.attention_performance['attention'].append(trade_result['pnl'])
@@ -2332,10 +2332,17 @@ class PerformanceMonitor:
 
     def get_state(self) -> Dict[str, Any]:
         """Get component state for checkpointing"""
-        return {
+        state = {
             'class': self.__class__.__name__,
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'metrics_count': len(self.metrics_store.trading_metrics) if hasattr(self.metrics_store, 'trading_metrics') else 0
         }
+        
+        # Safely get attention state if available
+        if self.attention and hasattr(self.attention, 'last_checkpoint') and self.attention.last_checkpoint:
+            state['last_attention_checkpoint'] = self.attention.last_checkpoint.get('timestamp')
+        
+        return state
 
     def load_state(self, state: Dict[str, Any]) -> None:
         """Load component state from checkpoint"""

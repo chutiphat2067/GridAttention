@@ -1349,6 +1349,11 @@ class AttentionLearningLayer:
         self._lock = asyncio.Lock()
         self.is_running = True
         
+        # Checkpoint tracking
+        self.last_checkpoint = None
+        self.checkpoint_history = deque(maxlen=100)
+        self.checkpoint_interval = 300  # 5 minutes
+        
         # Warmup state variables
         self.warmup_loaded = False
         self.original_thresholds = {
@@ -1736,8 +1741,70 @@ class AttentionLearningLayer:
         return {
             'class': self.__class__.__name__,
             'timestamp': time.time(),
-            'phase': self.current_phase.value,
-            'learning_progress': self.performance_tracker.learning_progress
+            'phase': self.phase.value,
+            'metrics': {
+                'total_observations': self.metrics.total_observations,
+                'shadow_calculations': self.metrics.shadow_calculations,
+                'active_applications': self.metrics.active_applications
+            }
+        }
+    
+    def save_checkpoint(self) -> Dict[str, Any]:
+        """Save current state as checkpoint"""
+        checkpoint = {
+            'timestamp': time.time(),
+            'phase': self.phase.value,
+            'state': self.get_state(),
+            'performance': {
+                'baseline': self.baseline_performance.copy(),
+                'attention': self.attention_performance.copy()
+            }
+        }
+        
+        self.last_checkpoint = checkpoint
+        self.checkpoint_history.append(checkpoint)
+        
+        logger.debug(f"Checkpoint saved for phase {self.phase.value}")
+        return checkpoint
+    
+    def restore_checkpoint(self, checkpoint: Dict[str, Any]) -> bool:
+        """Restore from checkpoint"""
+        try:
+            if 'state' in checkpoint:
+                state = checkpoint['state']
+                self.phase = AttentionPhase(state.get('phase', 'learning'))
+                
+                if 'metrics' in state:
+                    metrics = state['metrics']
+                    self.metrics.total_observations = metrics.get('total_observations', 0)
+                    self.metrics.shadow_calculations = metrics.get('shadow_calculations', 0)
+                    self.metrics.active_applications = metrics.get('active_applications', 0)
+            
+            if 'performance' in checkpoint:
+                perf = checkpoint['performance']
+                self.baseline_performance = perf.get('baseline', {})
+                self.attention_performance = perf.get('attention', {})
+            
+            self.last_checkpoint = checkpoint
+            logger.info(f"Checkpoint restored to phase {self.phase.value}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to restore checkpoint: {e}")
+            return False
+    
+    def get_checkpoint_metadata(self) -> Dict[str, Any]:
+        """Get checkpoint metadata for saving"""
+        return {
+            'phase': self.phase.value,
+            'total_observations': self.metrics.total_observations,
+            'shadow_calculations': self.metrics.shadow_calculations,
+            'active_applications': self.metrics.active_applications,
+            'last_checkpoint': self.last_checkpoint.get('timestamp') if self.last_checkpoint else None,
+            'checkpoint_count': len(self.checkpoint_history),
+            'baseline_performance': len(self.baseline_performance),
+            'attention_performance': len(self.attention_performance),
+            'warmup_loaded': self.warmup_loaded
         }
 
 

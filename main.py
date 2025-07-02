@@ -858,6 +858,10 @@ class GridTradingSystem:
             logger.error(f"Failed to generate final report: {e}")
             
         logger.info("✅ Shutdown complete")
+    
+    async def stop(self):
+        """Alias for shutdown method for compatibility"""
+        await self.shutdown()
 
 
 def main():

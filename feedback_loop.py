@@ -1025,9 +1025,8 @@ class FeedbackProcessor:
         
     async def _extract_pattern_insights(self) -> List[PerformanceInsight]:
         """Extract insights from patterns in data"""
-        # Import at function level to ensure availability
-        from datetime import datetime as dt
-        import time
+        # Local import for namespace safety in async context
+        from datetime import datetime
         insights = []
         
         # Time-based patterns
@@ -1038,7 +1037,7 @@ class FeedbackProcessor:
             for perf in self.performance_history:
                 if 'timestamp' in perf and 'pnl' in perf:
                     try:
-                        hour = dt.fromtimestamp(perf['timestamp']).hour
+                        hour = datetime.fromtimestamp(perf['timestamp']).hour
                         hourly_performance[hour].append(perf['pnl'])
                     except Exception as e:
                         logger.warning(f"Error processing timestamp in performance history: {e}")
