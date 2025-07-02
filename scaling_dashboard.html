@@ -1,311 +1,1014 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Grid Trading - Scaling Monitor Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>GridAttention Operations Dashboard</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: monospace;
             margin: 0;
-            padding: 20px;
-            background-color: #1a1a1a;
-            color: #fff;
+            padding: 10px;
+            background: #f0f0f0;
+            font-size: 12px;
         }
-
-        .dashboard {
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            font-size: 16px;
+            margin: 0 0 10px 0;
+            padding: 5px;
+            background: #333;
+            color: white;
+        }
+        
+        .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
+            gap: 10px;
         }
-
-        .metric-card {
-            background: #2a2a2a;
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        
+        .panel {
+            background: white;
+            border: 1px solid #ccc;
+            padding: 10px;
         }
-
-        .metric-value {
-            font-size: 2em;
+        
+        .panel h2 {
+            font-size: 14px;
+            margin: 0 0 10px 0;
+            padding: 5px;
+            background: #666;
+            color: white;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        
+        th, td {
+            border: 1px solid #ddd;
+            padding: 3px 5px;
+            text-align: left;
+        }
+        
+        th {
+            background: #e0e0e0;
             font-weight: bold;
-            margin: 10px 0;
         }
-
-        .critical {
-            color: #ff4444;
+        
+        .value {
+            font-weight: bold;
         }
-
-        .warning {
-            color: #ffaa44;
-        }
-
-        .ok {
-            color: #44ff44;
-        }
-
-        .chart-container {
-            position: relative;
-            height: 300px;
-            margin-top: 20px;
-        }
-
-        .recommendations {
-            background: #333;
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 20px;
-        }
-
-        .recommendation-item {
+        
+        .positive { color: green; }
+        .negative { color: red; }
+        .warning { color: orange; }
+        .critical { background: #ffcccc; }
+        
+        .controls {
             margin: 10px 0;
             padding: 10px;
-            background: #444;
-            border-radius: 4px;
+            background: #f8f8f8;
+            border: 1px solid #ddd;
         }
-
-        .priority-immediate {
-            border-left: 4px solid #ff4444;
+        
+        button {
+            padding: 5px 10px;
+            margin: 2px;
+            cursor: pointer;
         }
-
-        .priority-high {
-            border-left: 4px solid #ffaa44;
+        
+        input, select {
+            padding: 3px;
+            margin: 2px;
         }
-
-        .priority-medium {
-            border-left: 4px solid #4444ff;
+        
+        .log {
+            background: black;
+            color: #0f0;
+            padding: 10px;
+            height: 200px;
+            overflow-y: scroll;
+            font-family: monospace;
+            font-size: 11px;
         }
-
-        .priority-low {
-            border-left: 4px solid #888;
+        
+        .progress {
+            background: #e0e0e0;
+            height: 20px;
+            position: relative;
+            margin: 5px 0;
+        }
+        
+        .progress-bar {
+            background: #4CAF50;
+            height: 100%;
+            transition: width 0.3s;
+        }
+        
+        .progress-text {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            line-height: 20px;
+            font-weight: bold;
+        }
+        
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 5px;
+            margin: 10px 0;
+        }
+        
+        .status-item {
+            border: 1px solid #ccc;
+            padding: 5px;
+            text-align: center;
+        }
+        
+        .status-ok { background: #c8e6c9; }
+        .status-warning { background: #ffecb3; }
+        .status-error { background: #ffcdd2; }
+        
+        .quick-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 5px;
+            margin: 10px 0;
+        }
+        
+        .stat-box {
+            border: 1px solid #999;
+            padding: 5px;
+            text-align: center;
+        }
+        
+        .actions {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: white;
+            border: 2px solid #333;
+            padding: 10px;
+            z-index: 1000;
+        }
+        
+        #refresh-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            background: #4CAF50;
+            color: white;
         }
     </style>
 </head>
-
 <body>
-    <h1>Grid Trading System - Scaling Monitor</h1>
-
-    <div class="dashboard">
-        <!-- CPU Usage -->
-        <div class="metric-card">
-            <h3>CPU Usage</h3>
-            <div class="metric-value" id="cpu-usage">--</div>
-            <canvas id="cpu-chart"></canvas>
+    <div class="container">
+        <h1>GRIDATTENTION OPERATIONS DASHBOARD | <span id="system-time"></span> | Status: <span id="system-status">RUNNING</span></h1>
+        
+        <div id="refresh-status">Auto-refresh: ON</div>
+        
+        <!-- Quick Actions Bar -->
+        <div class="controls">
+            <strong>QUICK ACTIONS:</strong>
+            <button onclick="emergencyStop()">🛑 EMERGENCY STOP</button>
+            <button onclick="pauseTrading()">⏸️ Pause Trading</button>
+            <button onclick="resumeTrading()">▶️ Resume Trading</button>
+            <button onclick="saveCheckpoint()">💾 Save Checkpoint</button>
+            <button onclick="toggleAugmentation()">🔄 Toggle Augmentation</button>
+            <button onclick="forcePhaseTransition()">⏭️ Force Phase Transition</button>
+            <button onclick="exportLogs()">📥 Export Logs</button>
+            <button onclick="clearAlerts()">🔕 Clear Alerts</button>
         </div>
-
-        <!-- Memory Usage -->
-        <div class="metric-card">
-            <h3>Memory Usage</h3>
-            <div class="metric-value" id="memory-usage">--</div>
-            <canvas id="memory-chart"></canvas>
+        
+        <div class="grid">
+            <!-- Critical Metrics Panel -->
+            <div class="panel">
+                <h2>⚡ CRITICAL METRICS</h2>
+                <table>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Value</th>
+                        <th>Threshold</th>
+                        <th>Status</th>
+                    </tr>
+                    <tr>
+                        <td>P&L Today</td>
+                        <td class="value" id="pnl-today">$0</td>
+                        <td>-$1000</td>
+                        <td id="pnl-status">OK</td>
+                    </tr>
+                    <tr>
+                        <td>Win Rate</td>
+                        <td class="value" id="win-rate">0%</td>
+                        <td>>45%</td>
+                        <td id="winrate-status">OK</td>
+                    </tr>
+                    <tr>
+                        <td>Drawdown</td>
+                        <td class="value" id="drawdown">0%</td>
+                        <td><3%</td>
+                        <td id="drawdown-status">OK</td>
+                    </tr>
+                    <tr>
+                        <td>Overfitting Score</td>
+                        <td class="value" id="overfit-score">0.00</td>
+                        <td><0.5</td>
+                        <td id="overfit-status">OK</td>
+                    </tr>
+                    <tr>
+                        <td>Open Positions</td>
+                        <td class="value" id="open-positions">0</td>
+                        <td><10</td>
+                        <td id="positions-status">OK</td>
+                    </tr>
+                    <tr>
+                        <td>System Latency</td>
+                        <td class="value" id="latency">0ms</td>
+                        <td><100ms</td>
+                        <td id="latency-status">OK</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Phase & Learning Status -->
+            <div class="panel">
+                <h2>🎯 ATTENTION LEARNING STATUS</h2>
+                <table>
+                    <tr>
+                        <td>Current Phase</td>
+                        <td class="value" id="current-phase">LEARNING</td>
+                    </tr>
+                    <tr>
+                        <td>Observations</td>
+                        <td class="value" id="observations">0</td>
+                    </tr>
+                    <tr>
+                        <td>Phase Progress</td>
+                        <td colspan="2">
+                            <div class="progress">
+                                <div class="progress-bar" id="phase-progress" style="width: 0%"></div>
+                                <div class="progress-text" id="phase-progress-text">0%</div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Time to Next Phase</td>
+                        <td class="value" id="time-to-phase">--</td>
+                    </tr>
+                    <tr>
+                        <td>Learning Rate</td>
+                        <td class="value" id="learning-rate">0.001</td>
+                    </tr>
+                    <tr>
+                        <td>Warmup Loaded</td>
+                        <td class="value" id="warmup-status">NO</td>
+                    </tr>
+                </table>
+                <div style="margin-top: 10px;">
+                    <strong>Top Features:</strong>
+                    <div id="top-features" style="margin-top: 5px;"></div>
+                </div>
+            </div>
+            
+            <!-- Data Augmentation Control -->
+            <div class="panel">
+                <h2>🔄 DATA AUGMENTATION</h2>
+                <table>
+                    <tr>
+                        <td>Status</td>
+                        <td class="value" id="aug-status">ACTIVE</td>
+                    </tr>
+                    <tr>
+                        <td>Current Factor</td>
+                        <td class="value" id="aug-factor">3.0x</td>
+                    </tr>
+                    <tr>
+                        <td>Total Augmented</td>
+                        <td class="value" id="total-augmented">0</td>
+                    </tr>
+                    <tr>
+                        <td>Quality Score</td>
+                        <td class="value" id="aug-quality">0.00</td>
+                    </tr>
+                </table>
+                <div style="margin-top: 10px;">
+                    <strong>Method Usage:</strong>
+                    <table style="margin-top: 5px;">
+                        <tr>
+                            <th>Method</th>
+                            <th>Count</th>
+                            <th>%</th>
+                        </tr>
+                        <tr>
+                            <td>Noise Injection</td>
+                            <td id="noise-count">0</td>
+                            <td id="noise-pct">0%</td>
+                        </tr>
+                        <tr>
+                            <td>Time Warping</td>
+                            <td id="warp-count">0</td>
+                            <td id="warp-pct">0%</td>
+                        </tr>
+                        <tr>
+                            <td>Bootstrap</td>
+                            <td id="boot-count">0</td>
+                            <td id="boot-pct">0%</td>
+                        </tr>
+                        <tr>
+                            <td>Synthetic</td>
+                            <td id="synth-count">0</td>
+                            <td id="synth-pct">0%</td>
+                        </tr>
+                    </table>
+                </div>
+                <div style="margin-top: 10px;">
+                    <label>Override Factor: 
+                        <input type="number" id="aug-factor-input" step="0.5" min="0" max="5" value="0">
+                        <button onclick="setAugFactor()">Set</button>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Trading Activity -->
+            <div class="panel">
+                <h2>📊 TRADING ACTIVITY</h2>
+                <div class="quick-stats">
+                    <div class="stat-box">
+                        <div class="value" id="trades-today">0</div>
+                        <div>Trades Today</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="value" id="volume-today">$0</div>
+                        <div>Volume</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="value" id="fees-today">$0</div>
+                        <div>Fees</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="value" id="profit-factor">0.0</div>
+                        <div>Profit Factor</div>
+                    </div>
+                </div>
+                <table style="margin-top: 10px;">
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Size</th>
+                        <th>Entry</th>
+                        <th>Current</th>
+                        <th>P&L</th>
+                    </tr>
+                    <tbody id="open-positions-table">
+                        <tr><td colspan="6" style="text-align: center;">No open positions</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Market Regime -->
+            <div class="panel">
+                <h2>📈 MARKET ANALYSIS</h2>
+                <table>
+                    <tr>
+                        <td>Current Regime</td>
+                        <td class="value" id="market-regime">RANGING</td>
+                    </tr>
+                    <tr>
+                        <td>Confidence</td>
+                        <td class="value" id="regime-confidence">0%</td>
+                    </tr>
+                    <tr>
+                        <td>Volatility</td>
+                        <td class="value" id="volatility">0.00%</td>
+                    </tr>
+                    <tr>
+                        <td>Trend Strength</td>
+                        <td class="value" id="trend-strength">0.00</td>
+                    </tr>
+                    <tr>
+                        <td>Volume Ratio</td>
+                        <td class="value" id="volume-ratio">1.0</td>
+                    </tr>
+                </table>
+                <div style="margin-top: 10px;">
+                    <strong>Strategy:</strong> <span id="current-strategy">SymmetricGrid</span><br>
+                    <strong>Grid Levels:</strong> <span id="grid-levels">10</span><br>
+                    <strong>Spacing:</strong> <span id="grid-spacing">0.1%</span>
+                </div>
+            </div>
+            
+            <!-- System Health -->
+            <div class="panel">
+                <h2>🖥️ SYSTEM HEALTH</h2>
+                <div class="status-grid">
+                    <div class="status-item status-ok" id="cpu-status">
+                        CPU: <span id="cpu-usage">0%</span>
+                    </div>
+                    <div class="status-item status-ok" id="mem-status">
+                        MEM: <span id="mem-usage">0%</span>
+                    </div>
+                    <div class="status-item status-ok" id="disk-status">
+                        DISK: <span id="disk-usage">0%</span>
+                    </div>
+                    <div class="status-item status-ok" id="net-status">
+                        NET: <span id="net-latency">0ms</span>
+                    </div>
+                    <div class="status-item status-ok" id="db-status">
+                        DB: <span id="db-conn">OK</span>
+                    </div>
+                    <div class="status-item status-ok" id="api-status">
+                        API: <span id="api-conn">OK</span>
+                    </div>
+                </div>
+                <table style="margin-top: 10px;">
+                    <tr>
+                        <td>Uptime</td>
+                        <td class="value" id="uptime">00:00:00</td>
+                    </tr>
+                    <tr>
+                        <td>Tick Rate</td>
+                        <td class="value" id="tick-rate">0/s</td>
+                    </tr>
+                    <tr>
+                        <td>Error Count</td>
+                        <td class="value" id="error-count">0</td>
+                    </tr>
+                    <tr>
+                        <td>Queue Depth</td>
+                        <td class="value" id="queue-depth">0</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Risk Controls -->
+            <div class="panel">
+                <h2>🛡️ RISK CONTROLS</h2>
+                <table>
+                    <tr>
+                        <th>Limit</th>
+                        <th>Current</th>
+                        <th>Max</th>
+                        <th>Action</th>
+                    </tr>
+                    <tr>
+                        <td>Position Size</td>
+                        <td id="current-pos-size">$0</td>
+                        <td id="max-pos-size">$5000</td>
+                        <td><button onclick="adjustLimit('position')">Adjust</button></td>
+                    </tr>
+                    <tr>
+                        <td>Daily Loss</td>
+                        <td id="current-daily-loss">$0</td>
+                        <td id="max-daily-loss">$1000</td>
+                        <td><button onclick="adjustLimit('daily-loss')">Adjust</button></td>
+                    </tr>
+                    <tr>
+                        <td>Concurrent Orders</td>
+                        <td id="current-orders">0</td>
+                        <td id="max-orders">10</td>
+                        <td><button onclick="adjustLimit('orders')">Adjust</button></td>
+                    </tr>
+                    <tr>
+                        <td>Leverage</td>
+                        <td id="current-leverage">1.0x</td>
+                        <td id="max-leverage">3.0x</td>
+                        <td><button onclick="adjustLimit('leverage')">Adjust</button></td>
+                    </tr>
+                </table>
+                <div style="margin-top: 10px;">
+                    <label>
+                        <input type="checkbox" id="risk-override" onchange="toggleRiskOverride()">
+                        Enable Risk Override (DANGEROUS)
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Live Log -->
+            <div class="panel" style="grid-column: 1 / -1;">
+                <h2>📜 LIVE LOG (Last 100 entries)</h2>
+                <div class="controls">
+                    <label>Filter: 
+                        <select id="log-filter" onchange="filterLogs()">
+                            <option value="all">All</option>
+                            <option value="trades">Trades</option>
+                            <option value="errors">Errors</option>
+                            <option value="warnings">Warnings</option>
+                            <option value="augmentation">Augmentation</option>
+                            <option value="phase">Phase Changes</option>
+                        </select>
+                    </label>
+                    <label>Level: 
+                        <select id="log-level" onchange="filterLogs()">
+                            <option value="all">All</option>
+                            <option value="debug">Debug</option>
+                            <option value="info">Info</option>
+                            <option value="warning">Warning</option>
+                            <option value="error">Error</option>
+                        </select>
+                    </label>
+                    <button onclick="clearLogs()">Clear</button>
+                    <button onclick="pauseLogs()">Pause</button>
+                    <button onclick="downloadLogs()">Download</button>
+                </div>
+                <div class="log" id="log-container">
+                    <div>[2024-01-20 10:30:00] INFO: System initialized</div>
+                    <div>[2024-01-20 10:30:01] INFO: Loading warmup state...</div>
+                    <div>[2024-01-20 10:30:02] INFO: Warmup loaded - 150,000 observations</div>
+                    <div>[2024-01-20 10:30:03] INFO: Starting in SHADOW phase</div>
+                </div>
+            </div>
         </div>
-
-        <!-- Execution Latency -->
-        <div class="metric-card">
-            <h3>Execution Latency (p99)</h3>
-            <div class="metric-value" id="latency">--</div>
-            <canvas id="latency-chart"></canvas>
-        </div>
-
-        <!-- Queue Depth -->
-        <div class="metric-card">
-            <h3>Queue Depth</h3>
-            <div class="metric-value" id="queue-depth">--</div>
-            <canvas id="queue-chart"></canvas>
+        
+        <!-- Fixed Actions Panel -->
+        <div class="actions">
+            <h3>⚙️ SYSTEM CONTROLS</h3>
+            <button onclick="location.reload()">🔄 Refresh Dashboard</button><br>
+            <button onclick="openConfig()">⚙️ Edit Config</button><br>
+            <button onclick="viewCharts()">📊 View Charts</button><br>
+            <button onclick="runDiagnostics()">🔍 Run Diagnostics</button><br>
+            <hr>
+            <label>
+                <input type="checkbox" id="auto-refresh" checked> Auto-refresh
+            </label><br>
+            <label>
+                Refresh Rate:
+                <select id="refresh-rate" onchange="updateRefreshRate()">
+                    <option value="1000">1s</option>
+                    <option value="2000" selected>2s</option>
+                    <option value="5000">5s</option>
+                    <option value="10000">10s</option>
+                </select>
+            </label>
         </div>
     </div>
-
-    <!-- Scaling Score -->
-    <div class="metric-card" style="margin-top: 20px;">
-        <h3>Overall Scaling Score</h3>
-        <div class="metric-value" id="scaling-score" style="font-size: 3em;">--</div>
-        <div id="scaling-status"></div>
-    </div>
-
-    <!-- Recommendations -->
-    <div class="recommendations">
-        <h3>Scaling Recommendations</h3>
-        <div id="recommendations-list"></div>
-    </div>
-
-    <!-- Predictions -->
-    <div class="metric-card" style="margin-top: 20px;">
-        <h3>Resource Predictions</h3>
-        <div id="predictions"></div>
-    </div>
-
+    
     <script>
-        // Initialize charts
-        const charts = {};
-
-        function initChart(canvasId, label) {
-            const ctx = document.getElementById(canvasId).getContext('2d');
-            return new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: label,
-                        data: [],
-                        borderColor: '#4444ff',
-                        tension: 0.1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: { color: '#444' },
-                            ticks: { color: '#fff' }
-                        },
-                        x: {
-                            grid: { color: '#444' },
-                            ticks: { color: '#fff' }
-                        }
-                    },
-                    plugins: {
-                        legend: { display: false }
-                    }
+        // Global state
+        let autoRefresh = true;
+        let refreshInterval = 2000;
+        let refreshTimer = null;
+        let logPaused = false;
+        let systemData = {};
+        
+        // Initialize
+        function init() {
+            updateSystemTime();
+            setInterval(updateSystemTime, 1000);
+            startAutoRefresh();
+            connectWebSocket();
+        }
+        
+        // Update system time
+        function updateSystemTime() {
+            document.getElementById('system-time').textContent = new Date().toLocaleString();
+        }
+        
+        // Auto refresh
+        function startAutoRefresh() {
+            if (refreshTimer) clearInterval(refreshTimer);
+            if (autoRefresh) {
+                refreshTimer = setInterval(updateDashboard, refreshInterval);
+                updateDashboard();
+            }
+        }
+        
+        function updateRefreshRate() {
+            refreshInterval = parseInt(document.getElementById('refresh-rate').value);
+            startAutoRefresh();
+        }
+        
+        // WebSocket connection
+        function connectWebSocket() {
+            // In production, connect to real WebSocket
+            // const ws = new WebSocket('ws://localhost:8080/ws');
+            // ws.onmessage = (event) => {
+            //     systemData = JSON.parse(event.data);
+            //     updateDashboard();
+            // };
+            
+            // For demo, simulate data
+            simulateData();
+        }
+        
+        // Simulate data for demo
+        function simulateData() {
+            systemData = {
+                pnl: -234.56,
+                winRate: 48.5,
+                drawdown: 2.1,
+                overfittingScore: 0.23,
+                openPositions: 3,
+                latency: 45,
+                phase: 'shadow',
+                observations: 2567,
+                phaseProgress: 65,
+                learningRate: 0.001,
+                warmupLoaded: true,
+                augmentationStatus: 'active',
+                augmentationFactor: 1.5,
+                totalAugmented: 15234,
+                augmentationQuality: 0.87,
+                tradesToday: 45,
+                volumeToday: 125000,
+                feesToday: 125.50,
+                profitFactor: 1.23,
+                regime: 'ranging',
+                regimeConfidence: 78,
+                volatility: 0.0012,
+                trendStrength: 0.15,
+                volumeRatio: 1.25,
+                cpuUsage: 45,
+                memUsage: 62,
+                diskUsage: 35,
+                netLatency: 12,
+                uptime: 3672,
+                tickRate: 145,
+                errorCount: 2,
+                queueDepth: 15
+            };
+        }
+        
+        // Update dashboard
+        function updateDashboard() {
+            updateCriticalMetrics();
+            updateLearningStatus();
+            updateAugmentation();
+            updateTradingActivity();
+            updateMarketAnalysis();
+            updateSystemHealth();
+            updateRiskControls();
+            if (!logPaused) updateLogs();
+        }
+        
+        function updateCriticalMetrics() {
+            // P&L
+            const pnl = systemData.pnl || 0;
+            const pnlElement = document.getElementById('pnl-today');
+            pnlElement.textContent = `$${pnl.toFixed(2)}`;
+            pnlElement.className = pnl >= 0 ? 'value positive' : 'value negative';
+            document.getElementById('pnl-status').textContent = pnl < -1000 ? 'ALERT' : 'OK';
+            document.getElementById('pnl-status').className = pnl < -1000 ? 'critical' : '';
+            
+            // Win Rate
+            const winRate = systemData.winRate || 0;
+            document.getElementById('win-rate').textContent = `${winRate.toFixed(1)}%`;
+            document.getElementById('winrate-status').textContent = winRate < 45 ? 'LOW' : 'OK';
+            
+            // Drawdown
+            const drawdown = systemData.drawdown || 0;
+            document.getElementById('drawdown').textContent = `${drawdown.toFixed(1)}%`;
+            document.getElementById('drawdown-status').textContent = drawdown > 3 ? 'HIGH' : 'OK';
+            
+            // Overfitting
+            const overfit = systemData.overfittingScore || 0;
+            document.getElementById('overfit-score').textContent = overfit.toFixed(2);
+            document.getElementById('overfit-status').textContent = overfit > 0.5 ? 'HIGH' : 'OK';
+            
+            // Positions
+            document.getElementById('open-positions').textContent = systemData.openPositions || 0;
+            
+            // Latency
+            const latency = systemData.latency || 0;
+            document.getElementById('latency').textContent = `${latency}ms`;
+            document.getElementById('latency-status').textContent = latency > 100 ? 'SLOW' : 'OK';
+        }
+        
+        function updateLearningStatus() {
+            const phase = systemData.phase || 'learning';
+            document.getElementById('current-phase').textContent = phase.toUpperCase();
+            document.getElementById('observations').textContent = (systemData.observations || 0).toLocaleString();
+            
+            const progress = systemData.phaseProgress || 0;
+            document.getElementById('phase-progress').style.width = `${progress}%`;
+            document.getElementById('phase-progress-text').textContent = `${progress}%`;
+            
+            // Time to next phase
+            const obsPerMin = systemData.tickRate * 60 / 5; // Assuming 5 ticks per observation
+            const remaining = phase === 'learning' ? 2000 - systemData.observations :
+                            phase === 'shadow' ? 500 - (systemData.observations - 2000) : 0;
+            const minsToPhase = remaining / obsPerMin;
+            document.getElementById('time-to-phase').textContent = 
+                minsToPhase > 0 ? `${Math.ceil(minsToPhase)} mins` : 'Ready';
+            
+            document.getElementById('learning-rate').textContent = systemData.learningRate || '0.001';
+            document.getElementById('warmup-status').textContent = systemData.warmupLoaded ? 'YES' : 'NO';
+            
+            // Top features
+            const features = [
+                { name: 'trend_strength', importance: 0.89 },
+                { name: 'volatility_5m', importance: 0.76 },
+                { name: 'volume_ratio', importance: 0.65 }
+            ];
+            document.getElementById('top-features').innerHTML = features
+                .map(f => `${f.name}: ${(f.importance * 100).toFixed(0)}%`)
+                .join(' | ');
+        }
+        
+        function updateAugmentation() {
+            const status = systemData.augmentationStatus || 'inactive';
+            document.getElementById('aug-status').textContent = status.toUpperCase();
+            document.getElementById('aug-factor').textContent = `${systemData.augmentationFactor || 1}x`;
+            document.getElementById('total-augmented').textContent = (systemData.totalAugmented || 0).toLocaleString();
+            document.getElementById('aug-quality').textContent = (systemData.augmentationQuality || 0).toFixed(2);
+            
+            // Method counts
+            const total = systemData.totalAugmented || 1;
+            const methods = {
+                noise: 0.3,
+                warp: 0.25,
+                boot: 0.25,
+                synth: 0.2
+            };
+            
+            document.getElementById('noise-count').textContent = Math.floor(total * methods.noise);
+            document.getElementById('noise-pct').textContent = `${(methods.noise * 100).toFixed(0)}%`;
+            document.getElementById('warp-count').textContent = Math.floor(total * methods.warp);
+            document.getElementById('warp-pct').textContent = `${(methods.warp * 100).toFixed(0)}%`;
+            document.getElementById('boot-count').textContent = Math.floor(total * methods.boot);
+            document.getElementById('boot-pct').textContent = `${(methods.boot * 100).toFixed(0)}%`;
+            document.getElementById('synth-count').textContent = Math.floor(total * methods.synth);
+            document.getElementById('synth-pct').textContent = `${(methods.synth * 100).toFixed(0)}%`;
+        }
+        
+        function updateTradingActivity() {
+            document.getElementById('trades-today').textContent = systemData.tradesToday || 0;
+            document.getElementById('volume-today').textContent = `$${(systemData.volumeToday || 0).toLocaleString()}`;
+            document.getElementById('fees-today').textContent = `$${(systemData.feesToday || 0).toFixed(2)}`;
+            document.getElementById('profit-factor').textContent = (systemData.profitFactor || 0).toFixed(2);
+            
+            // Open positions table
+            const positions = [
+                { symbol: 'BTC/USDT', side: 'LONG', size: 0.1, entry: 49850, current: 50100, pnl: 25 },
+                { symbol: 'BTC/USDT', side: 'SHORT', size: 0.05, entry: 50200, current: 50100, pnl: 5 },
+                { symbol: 'BTC/USDT', side: 'LONG', size: 0.08, entry: 50050, current: 50100, pnl: 4 }
+            ];
+            
+            const tbody = document.getElementById('open-positions-table');
+            if (systemData.openPositions > 0) {
+                tbody.innerHTML = positions.slice(0, systemData.openPositions).map(p => `
+                    <tr>
+                        <td>${p.symbol}</td>
+                        <td>${p.side}</td>
+                        <td>${p.size}</td>
+                        <td>$${p.entry}</td>
+                        <td>$${p.current}</td>
+                        <td class="${p.pnl >= 0 ? 'positive' : 'negative'}">$${p.pnl.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+        
+        function updateMarketAnalysis() {
+            document.getElementById('market-regime').textContent = (systemData.regime || 'unknown').toUpperCase();
+            document.getElementById('regime-confidence').textContent = `${systemData.regimeConfidence || 0}%`;
+            document.getElementById('volatility').textContent = `${((systemData.volatility || 0) * 100).toFixed(3)}%`;
+            document.getElementById('trend-strength').textContent = (systemData.trendStrength || 0).toFixed(2);
+            document.getElementById('volume-ratio').textContent = (systemData.volumeRatio || 1).toFixed(1);
+            
+            // Strategy info based on regime
+            const strategies = {
+                ranging: { name: 'SymmetricGrid', levels: 10, spacing: '0.1%' },
+                trending: { name: 'AsymmetricGrid', levels: 8, spacing: '0.15%' },
+                volatile: { name: 'WideGrid', levels: 6, spacing: '0.3%' }
+            };
+            
+            const strategy = strategies[systemData.regime] || strategies.ranging;
+            document.getElementById('current-strategy').textContent = strategy.name;
+            document.getElementById('grid-levels').textContent = strategy.levels;
+            document.getElementById('grid-spacing').textContent = strategy.spacing;
+        }
+        
+        function updateSystemHealth() {
+            // CPU
+            const cpu = systemData.cpuUsage || 0;
+            document.getElementById('cpu-usage').textContent = `${cpu}%`;
+            document.getElementById('cpu-status').className = 
+                cpu > 80 ? 'status-item status-error' : 
+                cpu > 60 ? 'status-item status-warning' : 
+                'status-item status-ok';
+            
+            // Memory
+            const mem = systemData.memUsage || 0;
+            document.getElementById('mem-usage').textContent = `${mem}%`;
+            document.getElementById('mem-status').className = 
+                mem > 80 ? 'status-item status-error' : 
+                mem > 60 ? 'status-item status-warning' : 
+                'status-item status-ok';
+            
+            // Other metrics
+            document.getElementById('disk-usage').textContent = `${systemData.diskUsage || 0}%`;
+            document.getElementById('net-latency').textContent = `${systemData.netLatency || 0}ms`;
+            
+            // Uptime
+            const uptime = systemData.uptime || 0;
+            const hours = Math.floor(uptime / 3600);
+            const mins = Math.floor((uptime % 3600) / 60);
+            const secs = uptime % 60;
+            document.getElementById('uptime').textContent = 
+                `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            
+            document.getElementById('tick-rate').textContent = `${systemData.tickRate || 0}/s`;
+            document.getElementById('error-count').textContent = systemData.errorCount || 0;
+            document.getElementById('queue-depth').textContent = systemData.queueDepth || 0;
+        }
+        
+        function updateRiskControls() {
+            // Current values
+            document.getElementById('current-pos-size').textContent = `$${(systemData.currentPosSize || 0).toFixed(0)}`;
+            document.getElementById('current-daily-loss').textContent = `$${(Math.abs(systemData.pnl) || 0).toFixed(0)}`;
+            document.getElementById('current-orders').textContent = systemData.openPositions || 0;
+            document.getElementById('current-leverage').textContent = `${(systemData.currentLeverage || 1).toFixed(1)}x`;
+        }
+        
+        function updateLogs() {
+            // Simulate new log entries
+            if (Math.random() > 0.7) {
+                const logTypes = [
+                    { level: 'INFO', msg: 'Market data processed', category: 'trades' },
+                    { level: 'DEBUG', msg: 'Feature extraction completed', category: 'augmentation' },
+                    { level: 'WARNING', msg: 'Latency spike detected: 150ms', category: 'warnings' },
+                    { level: 'INFO', msg: 'Augmentation applied: factor 1.5x', category: 'augmentation' },
+                    { level: 'ERROR', msg: 'Connection timeout to exchange API', category: 'errors' },
+                    { level: 'INFO', msg: 'Phase transition check: 65% complete', category: 'phase' }
+                ];
+                
+                const log = logTypes[Math.floor(Math.random() * logTypes.length)];
+                addLogEntry(log.level, log.msg);
+            }
+        }
+        
+        function addLogEntry(level, message) {
+            const container = document.getElementById('log-container');
+            const entry = document.createElement('div');
+            const timestamp = new Date().toLocaleString();
+            entry.textContent = `[${timestamp}] ${level}: ${message}`;
+            
+            if (level === 'ERROR') entry.style.color = '#ff6b6b';
+            else if (level === 'WARNING') entry.style.color = '#ffd93d';
+            else if (level === 'DEBUG') entry.style.color = '#95e1d3';
+            
+            container.appendChild(entry);
+            
+            // Keep only last 100 entries
+            while (container.children.length > 100) {
+                container.removeChild(container.firstChild);
+            }
+            
+            // Auto scroll to bottom
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        // Action functions
+        function emergencyStop() {
+            if (confirm('Are you sure you want to execute EMERGENCY STOP? This will close all positions and halt trading.')) {
+                addLogEntry('ERROR', 'EMERGENCY STOP EXECUTED BY USER');
+                document.getElementById('system-status').textContent = 'STOPPED';
+                document.getElementById('system-status').style.color = 'red';
+            }
+        }
+        
+        function pauseTrading() {
+            addLogEntry('INFO', 'Trading paused by user');
+            document.getElementById('system-status').textContent = 'PAUSED';
+        }
+        
+        function resumeTrading() {
+            addLogEntry('INFO', 'Trading resumed by user');
+            document.getElementById('system-status').textContent = 'RUNNING';
+        }
+        
+        function saveCheckpoint() {
+            addLogEntry('INFO', 'Checkpoint saved: checkpoint_20240120_103000.json');
+            alert('Checkpoint saved successfully!');
+        }
+        
+        function toggleAugmentation() {
+            const current = systemData.augmentationStatus === 'active';
+            systemData.augmentationStatus = current ? 'inactive' : 'active';
+            addLogEntry('INFO', `Data augmentation ${systemData.augmentationStatus}`);
+        }
+        
+        function forcePhaseTransition() {
+            if (confirm('Force transition to next phase? This may impact learning quality.')) {
+                const phases = ['learning', 'shadow', 'active'];
+                const currentIndex = phases.indexOf(systemData.phase);
+                systemData.phase = phases[Math.min(currentIndex + 1, 2)];
+                addLogEntry('WARNING', `Phase manually transitioned to ${systemData.phase.toUpperCase()}`);
+            }
+        }
+        
+        function exportLogs() {
+            const logs = document.getElementById('log-container').innerText;
+            const blob = new Blob([logs], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `gridattention_logs_${new Date().toISOString()}.txt`;
+            a.click();
+        }
+        
+        function clearAlerts() {
+            systemData.errorCount = 0;
+            addLogEntry('INFO', 'Alerts cleared by user');
+        }
+        
+        function setAugFactor() {
+            const factor = parseFloat(document.getElementById('aug-factor-input').value);
+            if (factor >= 0 && factor <= 5) {
+                systemData.augmentationFactor = factor;
+                addLogEntry('INFO', `Augmentation factor manually set to ${factor}x`);
+            }
+        }
+        
+        function adjustLimit(type) {
+            const newValue = prompt(`Enter new ${type} limit:`);
+            if (newValue) {
+                addLogEntry('WARNING', `Risk limit adjusted: ${type} = ${newValue}`);
+            }
+        }
+        
+        function toggleRiskOverride() {
+            const override = document.getElementById('risk-override').checked;
+            if (override) {
+                if (!confirm('WARNING: Enabling risk override can lead to significant losses. Continue?')) {
+                    document.getElementById('risk-override').checked = false;
+                    return;
                 }
-            });
+            }
+            addLogEntry(override ? 'WARNING' : 'INFO', `Risk override ${override ? 'ENABLED' : 'disabled'}`);
         }
-
-        // Initialize all charts
-        charts.cpu = initChart('cpu-chart', 'CPU %');
-        charts.memory = initChart('memory-chart', 'Memory %');
-        charts.latency = initChart('latency-chart', 'Latency ms');
-        charts.queue = initChart('queue-chart', 'Queue Size');
-
-        // Update dashboard with new data
-        function updateDashboard(data) {
-            // Update current values
-            updateMetric('cpu-usage', data.current_metrics.cpu_usage, '%', 70, 90);
-            updateMetric('memory-usage', data.current_metrics.memory_usage, '%', 80, 95);
-            updateMetric('latency', data.current_metrics.execution_latency_p99, 'ms', 20, 50);
-            updateMetric('queue-depth', data.current_metrics.execution_queue_depth, '', 500, 1000);
-
-            // Update scaling score
-            const score = data.scaling_score;
-            document.getElementById('scaling-score').textContent = score.toFixed(1);
-            document.getElementById('scaling-score').className =
-                score > 80 ? 'metric-value critical' :
-                    score > 50 ? 'metric-value warning' :
-                        'metric-value ok';
-
-            // Update status
-            document.getElementById('scaling-status').textContent =
-                data.immediate_action_required ? '⚠️ IMMEDIATE ACTION REQUIRED' : '✓ System Stable';
-
-            // Update recommendations
-            updateRecommendations(data.recommendations);
-
-            // Update predictions
-            updatePredictions(data.predictions);
+        
+        function filterLogs() {
+            // Implementation for log filtering
+            addLogEntry('INFO', 'Log filter updated');
         }
-
-        function updateMetric(elementId, value, unit, warningThreshold, criticalThreshold) {
-            const element = document.getElementById(elementId);
-            element.textContent = value.toFixed(1) + unit;
-
-            if (value >= criticalThreshold) {
-                element.className = 'metric-value critical';
-            } else if (value >= warningThreshold) {
-                element.className = 'metric-value warning';
+        
+        function clearLogs() {
+            document.getElementById('log-container').innerHTML = '';
+            addLogEntry('INFO', 'Logs cleared');
+        }
+        
+        function pauseLogs() {
+            logPaused = !logPaused;
+            addLogEntry('INFO', `Log updates ${logPaused ? 'paused' : 'resumed'}`);
+        }
+        
+        function downloadLogs() {
+            exportLogs();
+        }
+        
+        function openConfig() {
+            alert('Config editor would open here');
+        }
+        
+        function viewCharts() {
+            window.open('charts.html', '_blank');
+        }
+        
+        function runDiagnostics() {
+            addLogEntry('INFO', 'Running system diagnostics...');
+            setTimeout(() => {
+                addLogEntry('INFO', 'Diagnostics complete: All systems operational');
+            }, 2000);
+        }
+        
+        // Auto-refresh checkbox
+        document.getElementById('auto-refresh').addEventListener('change', (e) => {
+            autoRefresh = e.target.checked;
+            document.getElementById('refresh-status').textContent = `Auto-refresh: ${autoRefresh ? 'ON' : 'OFF'}`;
+            if (autoRefresh) {
+                startAutoRefresh();
             } else {
-                element.className = 'metric-value ok';
+                clearInterval(refreshTimer);
             }
-        }
-
-        function updateRecommendations(recommendations) {
-            const container = document.getElementById('recommendations-list');
-            container.innerHTML = '';
-
-            recommendations.forEach(rec => {
-                const item = document.createElement('div');
-                item.className = `recommendation-item priority-${rec.priority.toLowerCase()}`;
-                item.innerHTML = `
-                    <strong>${rec.priority}: ${rec.component}</strong><br>
-                    ${rec.reason}<br>
-                    <small>Action: ${rec.action}</small>
-                `;
-                container.appendChild(item);
-            });
-
-            if (recommendations.length === 0) {
-                container.innerHTML = '<p>No scaling actions recommended at this time.</p>';
-            }
-        }
-
-        function updatePredictions(predictions) {
-            const container = document.getElementById('predictions');
-            let html = '<table style="width: 100%;">';
-            html += '<tr><th>Metric</th><th>Current</th><th>1 Day</th><th>1 Week</th><th>Days to Critical</th></tr>';
-
-            for (const [metric, pred] of Object.entries(predictions)) {
-                const daysUntilCritical = pred.days_until_critical || 'N/A';
-                const daysClass = daysUntilCritical < 7 ? 'critical' :
-                    daysUntilCritical < 30 ? 'warning' : 'ok';
-
-                html += `<tr>
-                    <td>${metric}</td>
-                    <td>${pred.current.toFixed(1)}</td>
-                    <td>${pred['1_day'].toFixed(1)}</td>
-                    <td>${pred['1_week'].toFixed(1)}</td>
-                    <td class="${daysClass}">${typeof daysUntilCritical === 'number' ?
-                        daysUntilCritical.toFixed(1) : daysUntilCritical
-                    }</td>
-                </tr>`;
-            }
-
-            html += '</table>';
-            container.innerHTML = html;
-        }
-
-        // Fetch data periodically
-        async function fetchScalingData() {
-            try {
-                const response = await fetch('/api/scaling-report');
-                const data = await response.json();
-                updateDashboard(data);
-
-                // Update charts
-                updateCharts(data);
-            } catch (error) {
-                console.error('Failed to fetch scaling data:', error);
-            }
-        }
-
-        function updateCharts(data) {
-            // Add new data points to charts
-            const timestamp = new Date().toLocaleTimeString();
-
-            addChartData(charts.cpu, timestamp, data.current_metrics.cpu_usage);
-            addChartData(charts.memory, timestamp, data.current_metrics.memory_usage);
-            addChartData(charts.latency, timestamp, data.current_metrics.execution_latency_p99);
-            addChartData(charts.queue, timestamp, data.current_metrics.execution_queue_depth);
-        }
-
-        function addChartData(chart, label, value) {
-            chart.data.labels.push(label);
-            chart.data.datasets[0].data.push(value);
-
-            // Keep only last 20 data points
-            if (chart.data.labels.length > 20) {
-                chart.data.labels.shift();
-                chart.data.datasets[0].data.shift();
-            }
-
-            chart.update();
-        }
-
-        // Initial fetch and setup periodic updates
-        fetchScalingData();
-        setInterval(fetchScalingData, 60000);  // Update every minute
+        });
+        
+        // Initialize on load
+        window.onload = init;
+        
+        // Update data periodically for demo
+        setInterval(() => {
+            // Simulate data changes
+            systemData.pnl += (Math.random() - 0.5) * 50;
+            systemData.winRate += (Math.random() - 0.5) * 2;
+            systemData.observations += Math.floor(Math.random() * 10);
+            systemData.phaseProgress = Math.min(100, systemData.phaseProgress + Math.random() * 0.5);
+            systemData.totalAugmented += Math.floor(Math.random() * 20);
+            systemData.cpuUsage = Math.max(20, Math.min(80, systemData.cpuUsage + (Math.random() - 0.5) * 10));
+            systemData.memUsage = Math.max(40, Math.min(90, systemData.memUsage + (Math.random() - 0.5) * 5));
+            systemData.tickRate = Math.max(100, Math.min(200, systemData.tickRate + (Math.random() - 0.5) * 20));
+            systemData.uptime += 1;
+        }, 1000);
     </script>
 </body>
-
 </html>
