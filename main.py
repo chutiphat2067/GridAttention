@@ -17,47 +17,47 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 # Core components
-from market_data_input import MarketDataInput
-from feature_engineering_pipeline import FeatureEngineeringPipeline
-from attention_learning_layer import AttentionLearningLayer
-from market_regime_detector import MarketRegimeDetector
-from grid_strategy_selector import GridStrategySelector
-from risk_management_system import RiskManagementSystem
-from execution_engine import ExecutionEngine
-from performance_monitor import PerformanceMonitor
-from feedback_loop import FeedbackLoop
-from scaling_monitor import create_scaling_monitor, ScalingMonitor
+from data.market_data_input import MarketDataInput
+from data.feature_engineering_pipeline import FeatureEngineeringPipeline
+from core.attention_learning_layer import AttentionLearningLayer
+from core.market_regime_detector import MarketRegimeDetector
+from core.grid_strategy_selector import GridStrategySelector
+from core.risk_management_system import RiskManagementSystem
+from core.execution_engine import ExecutionEngine
+from core.performance_monitor import PerformanceMonitor
+from core.feedback_loop import FeedbackLoop
+from monitoring.scaling_monitor import create_scaling_monitor, ScalingMonitor
 
 # Overfitting protection components
-from overfitting_detector import OverfittingDetector, OverfittingMonitor, OverfittingRecovery
-from checkpoint_manager import CheckpointManager
-from data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augmentation_pipeline
-from adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
-from essential_fixes import apply_essential_fixes, KillSwitch
-from system_coordinator import SystemCoordinator
-from resource_limiter import set_resource_limits, resource_monitor
-from performance_cache import optimize_memory
+from core.overfitting_detector import OverfittingDetector, OverfittingMonitor, OverfittingRecovery
+from utils.checkpoint_manager import CheckpointManager
+from data.data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augmentation_pipeline
+from utils.adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
+from infrastructure.essential_fixes import apply_essential_fixes, KillSwitch
+from infrastructure.system_coordinator import SystemCoordinator
+from infrastructure.resource_limiter import set_resource_limits, resource_monitor
+from monitoring.performance_cache import optimize_memory
 
 # Phase-aware augmentation components
-from phase_aware_data_augmenter import (
+from data.phase_aware_data_augmenter import (
     PhaseAwareDataAugmenter, 
     AugmentationManager,
     create_phase_aware_augmentation_config
 )
-from augmentation_monitor import AugmentationDashboard
+from monitoring.augmentation_monitor import AugmentationDashboard
 
 # Dashboard integration
-from dashboard_integration import integrate_dashboard_optimized
-from dashboard_optimization import optimize_dashboard_performance, OptimizedDashboardCollector
-from unified_monitor import replace_monitoring_loops
-from memory_manager import patch_system_buffers, memory_manager, BoundedBuffer
+from monitoring.dashboard_integration import integrate_dashboard_optimized
+from monitoring.dashboard_optimization import optimize_dashboard_performance, OptimizedDashboardCollector
+from infrastructure.unified_monitor import replace_monitoring_loops
+from infrastructure.memory_manager import patch_system_buffers, memory_manager, BoundedBuffer
 
 # Setup logger
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('grid_trading.log'),
+        logging.FileHandler('logs/grid_trading.log'),
         logging.StreamHandler()
     ]
 )
@@ -71,7 +71,7 @@ class GridTradingSystem:
         # Load configurations
         self.config = self._load_config(config_path)
         self.overfitting_config = self._load_config(
-            overfitting_config_path or 'overfitting_config.yaml'
+            overfitting_config_path or 'config/overfitting_config.yaml'
         )
         
         # System state
@@ -882,12 +882,12 @@ def main():
     parser = argparse.ArgumentParser(description='Grid Trading System')
     parser.add_argument(
         '--config',
-        default='config.yaml',
+        default='config/config.yaml',
         help='Path to main configuration file'
     )
     parser.add_argument(
         '--overfitting-config',
-        default='overfitting_config.yaml',
+        default='config/overfitting_config.yaml',
         help='Path to overfitting configuration file'
     )
     parser.add_argument(
