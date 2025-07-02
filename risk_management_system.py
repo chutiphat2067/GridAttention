@@ -714,49 +714,6 @@ class EmergencyKillSwitch:
         logger.info(f"Emergency state saved to {filepath}")
 
 
-class RiskManagementSystem:
-    """
-    Comprehensive risk management with attention insights
-    """
-    
-    def __init__(self, config: Dict[str, Any], attention_layer: Optional[AttentionLearningLayer] = None):
-        self.config = config
-        self.attention = attention_layer
-        self.risk_calculator = RiskCalculator(config)
-        self.position_tracker = PositionTracker()
-        self.risk_limits = self._init_risk_limits()
-        self.limit_checker = RiskLimitChecker(self.risk_limits)
-        
-        # Add circuit breaker and kill switch
-        self.circuit_breaker = CircuitBreaker(config)
-        self.kill_switch = None  # Will be initialized after exchange manager is available
-        
-        # Risk monitoring
-        self.current_metrics = RiskMetrics()
-        self.metrics_history = deque(maxlen=1000)
-        self.risk_alerts = deque(maxlen=100)
-        
-        # Enhanced tracking
-        self.correlation_monitor = CorrelationMonitor()
-        self.consecutive_losses = 0
-        
-        # Emergency controls
-        self.emergency_stop = False
-        self.risk_reduction_mode = False
-        
-        # Performance tracking
-        self.risk_adjusted_returns = deque(maxlen=252)  # 1 year of daily returns
-        
-        # Overfitting detection
-        self.overfitting_detector = OverfittingDetector()
-        self.overfitting_risk_multiplier = 1.0
-        self.model_uncertainty_threshold = 0.5
-        self.overfitting_cooldown = 300  # 5 minutes
-        self.last_overfitting_check = 0
-        
-        self._lock = asyncio.Lock()
-        self._monitoring_task = None
-        
 class CorrelationMonitor:
     """Monitor position correlations in real-time"""
     
@@ -804,6 +761,57 @@ class CorrelationMonitor:
                 
         allowed = max_correlation < self.alert_threshold
         return allowed, max_correlation
+
+
+class RiskManagementSystem:
+    """
+    Comprehensive risk management with attention insights and overfitting prevention
+    """
+    
+    def __init__(self, config: Dict[str, Any], attention_layer: Optional[AttentionLearningLayer] = None):
+        self.config = config
+        self.attention = attention_layer
+        self.risk_calculator = RiskCalculator(config)
+        self.position_tracker = PositionTracker()
+        self.risk_limits = self._init_risk_limits()
+        self.limit_checker = RiskLimitChecker(self.risk_limits)
+        
+        # Add circuit breaker and kill switch
+        self.circuit_breaker = CircuitBreaker(config)
+        self.kill_switch = None  # Will be initialized after exchange manager is available
+        
+        # Risk monitoring
+        self.current_metrics = RiskMetrics()
+        self.metrics_history = deque(maxlen=1000)
+        self.risk_alerts = deque(maxlen=100)
+        
+        # Enhanced tracking
+        self.correlation_monitor = CorrelationMonitor()
+        self.consecutive_losses = 0
+        
+        # Emergency controls
+        self.emergency_stop = False
+        self.risk_reduction_mode = False
+        
+        # Performance tracking
+        self.risk_adjusted_returns = deque(maxlen=252)  # 1 year of daily returns
+        
+        # Overfitting detection - Enhanced
+        self.overfitting_detector = OverfittingDetector()
+        self.overfitting_risk_multiplier = 1.0
+        self.model_uncertainty_threshold = 0.5
+        self.overfitting_cooldown = 300  # 5 minutes
+        self.last_overfitting_check = 0
+        self.overfitting_metrics = {
+            'detection_count': 0,
+            'severity_history': deque(maxlen=100),
+            'risk_multiplier_history': deque(maxlen=100),
+            'last_severity': OverfittingSeverity.NONE,
+            'adaptive_threshold': 0.15  # Adaptive threshold for overfitting
+        }
+        
+        self._lock = asyncio.Lock()
+        self._monitoring_task = None
         
     def _init_risk_limits(self) -> Dict[str, float]:
         """Initialize risk limits from config"""
@@ -815,7 +823,9 @@ class CorrelationMonitor:
             'position_correlation_limit': self.config.get('position_correlation_limit', POSITION_CORRELATION_LIMIT),
             'concentration_limit': self.config.get('concentration_limit', CONCENTRATION_LIMIT),
             'max_var': self.config.get('max_var', 0.1),  # 10% VaR
-            'max_leverage': self.config.get('max_leverage', 3.0)
+            'max_leverage': self.config.get('max_leverage', 3.0),
+            'overfitting_threshold': self.config.get('overfitting_threshold', 0.15),  # 15% performance degradation
+            'model_uncertainty_limit': self.config.get('model_uncertainty_limit', 0.5)  # 50% uncertainty
         }
         
     async def start_monitoring(self) -> None:
@@ -1119,14 +1129,51 @@ class CorrelationMonitor:
                 )
                 violations.extend(var_violations)
                 
+            # Overfitting risk checks
+            overfitting_violations = await self._check_overfitting_risk_limits(proposed_action)
+            violations.extend(overfitting_violations)
+                
             # Record violations
             if violations:
                 self.limit_checker.record_violation(violations, proposed_action)
                 
             return violations
+    
+    async def _check_overfitting_risk_limits(self, proposed_action: Dict[str, Any]) -> List[RiskViolationType]:
+        """Check overfitting-specific risk limits"""
+        violations = []
+        
+        # Check if current overfitting risk is too high
+        current_multiplier = self.overfitting_risk_multiplier
+        if current_multiplier < 0.5:  # High overfitting risk
+            violations.append(RiskViolationType.OVERFITTING)
+            
+        # Check model uncertainty
+        model_uncertainty = proposed_action.get('model_uncertainty', 0.0)
+        if model_uncertainty > self.model_uncertainty_threshold:
+            violations.append(RiskViolationType.MODEL_UNCERTAINTY)
+            self.last_model_uncertainty = model_uncertainty
+            
+        # Check if we're in a different regime than training
+        current_regime = proposed_action.get('current_regime')
+        training_regime = proposed_action.get('training_regime')
+        if current_regime and training_regime and current_regime != training_regime:
+            # This increases overfitting risk
+            if current_multiplier < 0.7:  # More sensitive threshold for regime mismatch
+                violations.append(RiskViolationType.OVERFITTING)
+                
+        # Check recent performance degradation
+        if 'recent_performance' in proposed_action:
+            recent_trades = proposed_action['recent_performance']
+            if len(recent_trades) >= 10:
+                recent_win_rate = sum(1 for trade in recent_trades[-10:] if trade > 0) / 10
+                if recent_win_rate < 0.3:  # Less than 30% win rate recently
+                    violations.append(RiskViolationType.OVERFITTING)
+                    
+        return violations
             
     async def get_risk_action(self, violations: List[RiskViolationType]) -> RiskAction:
-        """Determine action to take based on violations"""
+        """Enhanced risk action determination with overfitting-specific handling"""
         if not violations:
             return RiskAction.ALERT  # No action needed
             
@@ -1143,13 +1190,31 @@ class CorrelationMonitor:
             else:
                 return RiskAction.BLOCK
                 
+        # Overfitting-specific handling
+        if RiskViolationType.OVERFITTING in violations:
+            # Check severity of overfitting
+            overfitting_severity = self.overfitting_metrics['last_severity']
+            
+            if overfitting_severity == OverfittingSeverity.CRITICAL:
+                return RiskAction.BLOCK  # Block new positions
+            elif overfitting_severity in [OverfittingSeverity.HIGH, OverfittingSeverity.MEDIUM]:
+                return RiskAction.REDUCE  # Reduce position sizes
+            else:
+                return RiskAction.ADJUST  # Just adjust parameters
+                
+        # Model uncertainty handling
+        if RiskViolationType.MODEL_UNCERTAINTY in violations:
+            if hasattr(self, 'last_model_uncertainty'):
+                if self.last_model_uncertainty > 0.7:  # Very high uncertainty
+                    return RiskAction.BLOCK
+                elif self.last_model_uncertainty > 0.5:  # Medium uncertainty
+                    return RiskAction.REDUCE
+                    
         # Medium violations require position reduction
         medium_violations = [
             RiskViolationType.POSITION_SIZE,
             RiskViolationType.CORRELATION,
-            RiskViolationType.CONCENTRATION,
-            RiskViolationType.OVERFITTING,
-            RiskViolationType.MODEL_UNCERTAINTY
+            RiskViolationType.CONCENTRATION
         ]
         
         if any(v in medium_violations for v in violations):
@@ -1192,17 +1257,9 @@ class CorrelationMonitor:
             # Update timestamp
             self.current_metrics.timestamp = time.time()
             
-            # Check for overfitting violations
-            current_time = time.time()
-            if current_time - self.last_overfitting_check > self.overfitting_cooldown:
-                performance_data = self.position_tracker.get_performance_metrics()
-                if performance_data['total_trades'] >= 50:
-                    validation_result = self.overfitting_detector.validate_performance(
-                        performance_data, {}
-                    )
-                    
-                    if validation_result.severity in [OverfittingSeverity.HIGH, OverfittingSeverity.CRITICAL]:
-                        self.current_metrics.violations.append(RiskViolationType.OVERFITTING)
+            # Enhanced overfitting violation checks
+            overfitting_violations = self._check_overfitting_violations()
+            self.current_metrics.violations.extend(overfitting_violations)
                         
             # Store in history
             self.metrics_history.append(self.current_metrics)
@@ -1250,7 +1307,7 @@ class CorrelationMonitor:
             return RiskLevel.LOW
             
     async def _calculate_overfitting_risk_multiplier(self, context: Dict[str, Any]) -> float:
-        """Calculate risk multiplier based on overfitting detection"""
+        """Enhanced overfitting risk multiplier calculation with adaptive thresholds"""
         current_time = time.time()
         
         # Rate limit overfitting checks
@@ -1262,33 +1319,172 @@ class CorrelationMonitor:
         if performance_data['total_trades'] < 50:  # Need sufficient data
             return 1.0
             
-        # Check for overfitting signs
-        validation_result = self.overfitting_detector.validate_performance(
-            performance_data, 
-            context.get('market_conditions', {})
-        )
+        # Enhanced overfitting detection with multiple indicators
+        validation_result = await self._detect_overfitting_comprehensive(performance_data, context)
         
-        # Calculate multiplier based on overfitting severity
-        if validation_result.severity == OverfittingSeverity.NONE:
-            multiplier = 1.0
-        elif validation_result.severity == OverfittingSeverity.LOW:
-            multiplier = 0.9
-        elif validation_result.severity == OverfittingSeverity.MEDIUM:
-            multiplier = 0.7
-        elif validation_result.severity == OverfittingSeverity.HIGH:
-            multiplier = 0.5
-        else:  # CRITICAL
-            multiplier = 0.2
-            
+        # Calculate multiplier with adaptive logic
+        multiplier = self._calculate_adaptive_multiplier(validation_result)
+        
+        # Update overfitting metrics
+        self._update_overfitting_metrics(validation_result, multiplier)
+        
         # Update cached values
         self.overfitting_risk_multiplier = multiplier
         self.last_overfitting_check = current_time
         
-        # Log if significant overfitting detected
+        # Log significant overfitting
         if multiplier < 0.8:
-            logger.warning(f"Overfitting detected, reducing position size by {(1-multiplier)*100:.1f}%")
+            logger.warning(f"Overfitting detected (severity: {validation_result.severity.value}), "
+                         f"reducing position size by {(1-multiplier)*100:.1f}%")
             
         return multiplier
+    
+    async def _detect_overfitting_comprehensive(self, performance_data: Dict[str, Any], 
+                                              context: Dict[str, Any]) -> 'ValidationResult':
+        """Comprehensive overfitting detection using multiple indicators"""
+        # Standard overfitting detection
+        base_result = self.overfitting_detector.validate_performance(
+            performance_data, 
+            context.get('market_conditions', {})
+        )
+        
+        # Additional risk indicators
+        additional_risk_score = 0.0
+        
+        # 1. Recent performance degradation
+        recent_trades = performance_data.get('recent_performance', [])
+        if len(recent_trades) >= 10:
+            recent_win_rate = sum(1 for trade in recent_trades[-10:] if trade > 0) / 10
+            overall_win_rate = performance_data.get('win_rate', 0.5)
+            
+            if recent_win_rate < overall_win_rate * 0.7:  # 30% performance drop
+                additional_risk_score += 0.3
+                
+        # 2. Parameter instability
+        parameter_changes = context.get('parameter_changes', [])
+        if len(parameter_changes) >= 5:
+            change_variance = np.var([abs(change) for change in parameter_changes[-5:]])
+            if change_variance > 0.1:  # High parameter instability
+                additional_risk_score += 0.2
+                
+        # 3. Market regime mismatch
+        current_regime = context.get('regime')
+        trained_regime = context.get('training_regime')
+        if current_regime and trained_regime and current_regime != trained_regime:
+            additional_risk_score += 0.15
+            
+        # 4. Model uncertainty
+        model_uncertainty = context.get('model_uncertainty', 0.0)
+        if model_uncertainty > self.model_uncertainty_threshold:
+            additional_risk_score += 0.25
+            
+        # 5. Correlation breakdown
+        portfolio_correlation = context.get('portfolio_correlation', 0.0)
+        if portfolio_correlation > 0.8:  # High correlation risk
+            additional_risk_score += 0.1
+            
+        # Adjust severity based on additional risk
+        final_confidence = base_result.confidence - additional_risk_score
+        
+        # Create enhanced validation result
+        if final_confidence <= 0.2:
+            enhanced_severity = OverfittingSeverity.CRITICAL
+        elif final_confidence <= 0.4:
+            enhanced_severity = OverfittingSeverity.HIGH
+        elif final_confidence <= 0.6:
+            enhanced_severity = OverfittingSeverity.MEDIUM
+        elif final_confidence <= 0.8:
+            enhanced_severity = OverfittingSeverity.LOW
+        else:
+            enhanced_severity = OverfittingSeverity.NONE
+            
+        # Return enhanced result
+        return ValidationResult(
+            is_valid=enhanced_severity == OverfittingSeverity.NONE,
+            confidence=max(0.0, final_confidence),
+            severity=enhanced_severity,
+            details={
+                'base_severity': base_result.severity.value,
+                'additional_risk_score': additional_risk_score,
+                'risk_factors': {
+                    'performance_degradation': recent_trades,
+                    'parameter_instability': parameter_changes,
+                    'regime_mismatch': current_regime != trained_regime if current_regime and trained_regime else False,
+                    'model_uncertainty': model_uncertainty,
+                    'correlation_risk': portfolio_correlation
+                }
+            }
+        )
+    
+    def _calculate_adaptive_multiplier(self, validation_result: 'ValidationResult') -> float:
+        """Calculate adaptive risk multiplier based on validation result"""
+        base_multipliers = {
+            OverfittingSeverity.NONE: 1.0,
+            OverfittingSeverity.LOW: 0.9,
+            OverfittingSeverity.MEDIUM: 0.7,
+            OverfittingSeverity.HIGH: 0.5,
+            OverfittingSeverity.CRITICAL: 0.2
+        }
+        
+        base_multiplier = base_multipliers[validation_result.severity]
+        
+        # Adaptive adjustment based on historical performance
+        severity_history = self.overfitting_metrics['severity_history']
+        
+        if len(severity_history) >= 5:
+            # If consistently showing overfitting, be more conservative
+            recent_high_severity = sum(1 for s in list(severity_history)[-5:] 
+                                     if s in [OverfittingSeverity.HIGH, OverfittingSeverity.CRITICAL])
+            
+            if recent_high_severity >= 3:  # 3 out of 5 recent checks showed high overfitting
+                base_multiplier *= 0.8  # Additional 20% reduction
+                logger.info("Persistent overfitting detected, applying additional risk reduction")
+                
+        # Confidence-based adjustment
+        confidence_factor = validation_result.confidence
+        adjusted_multiplier = base_multiplier * (0.5 + 0.5 * confidence_factor)
+        
+        # Ensure minimum multiplier
+        return max(0.1, adjusted_multiplier)
+    
+    def _update_overfitting_metrics(self, validation_result: 'ValidationResult', multiplier: float) -> None:
+        """Update overfitting tracking metrics"""
+        metrics = self.overfitting_metrics
+        
+        # Update counts and history
+        if validation_result.severity != OverfittingSeverity.NONE:
+            metrics['detection_count'] += 1
+            
+        metrics['severity_history'].append(validation_result.severity)
+        metrics['risk_multiplier_history'].append(multiplier)
+        metrics['last_severity'] = validation_result.severity
+        
+        # Adaptive threshold adjustment
+        if len(metrics['severity_history']) >= 20:
+            high_severity_rate = sum(1 for s in list(metrics['severity_history'])[-20:] 
+                                   if s in [OverfittingSeverity.HIGH, OverfittingSeverity.CRITICAL]) / 20
+            
+            # If overfitting is frequent, lower threshold (be more sensitive)
+            if high_severity_rate > 0.3:
+                metrics['adaptive_threshold'] = max(0.1, metrics['adaptive_threshold'] * 0.9)
+            # If overfitting is rare, raise threshold (be less sensitive)
+            elif high_severity_rate < 0.1:
+                metrics['adaptive_threshold'] = min(0.25, metrics['adaptive_threshold'] * 1.05)
+                
+    def _check_overfitting_violations(self) -> List[RiskViolationType]:
+        """Check for overfitting-related risk violations"""
+        violations = []
+        
+        # Check if overfitting multiplier is too low
+        if self.overfitting_risk_multiplier < 0.5:
+            violations.append(RiskViolationType.OVERFITTING)
+            
+        # Check model uncertainty
+        if hasattr(self, 'last_model_uncertainty'):
+            if self.last_model_uncertainty > self.model_uncertainty_threshold:
+                violations.append(RiskViolationType.MODEL_UNCERTAINTY)
+                
+        return violations
         
     def _check_model_uncertainty(self, context: Dict[str, Any]) -> bool:
         """Check if model uncertainty is too high"""
@@ -1445,7 +1641,7 @@ class CorrelationMonitor:
         return pnl
         
     async def get_risk_summary(self) -> Dict[str, Any]:
-        """Get comprehensive risk summary"""
+        """Get comprehensive risk summary with overfitting metrics"""
         performance = self.position_tracker.get_performance_metrics()
         
         return {
@@ -1463,6 +1659,14 @@ class CorrelationMonitor:
             'status': {
                 'emergency_stop': self.emergency_stop,
                 'risk_reduction_mode': self.risk_reduction_mode
+            },
+            'overfitting_metrics': {
+                'risk_multiplier': self.overfitting_risk_multiplier,
+                'last_severity': self.overfitting_metrics['last_severity'].value if self.overfitting_metrics['last_severity'] else 'NONE',
+                'detection_count': self.overfitting_metrics['detection_count'],
+                'adaptive_threshold': self.overfitting_metrics['adaptive_threshold'],
+                'recent_severity_trend': [s.value for s in list(self.overfitting_metrics['severity_history'])[-10:]],
+                'model_uncertainty': getattr(self, 'last_model_uncertainty', 0.0)
             },
             'recent_alerts': list(self.risk_alerts)[-10:],
             'concentration': self.current_metrics.concentration_by_symbol

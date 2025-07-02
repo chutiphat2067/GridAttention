@@ -25,6 +25,9 @@ from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_score
+from sklearn.ensemble import IsolationForest
+from sklearn.cluster import DBSCAN
+from sklearn.neural_network import MLPClassifier
 
 # Local imports (from other modules)
 from attention_learning_layer import AttentionLearningLayer, AttentionPhase
@@ -385,79 +388,233 @@ class DormantRegimeRule(BaseRegimeRule):
         return ['volatility_5m', 'volume_ratio', 'price_change_5m', 'spread_bps', 'trend_strength']
 
 
-class EnsembleRegimeDetector:
-    """Ensemble of multiple regime detection methods"""
-    
+class RuleBasedRegimeDetector:
+    """Rule-based detector using existing rules"""
     def __init__(self):
-        # เนื่องจากเรายังไม่มี class เหล่านี้ ให้ใช้ placeholder หรือสร้างง่ายๆ
-        self.detectors = {
-            'rule_based': 'RuleBasedRegimeDetector',  # Placeholder
-            'gmm': 'GMMRegimeDetector',  # Placeholder 
-            'rf': 'RandomForestRegimeDetector',  # Placeholder
-            'simple': 'SimpleThresholdDetector'  # Placeholder
+        self.rules = {
+            MarketRegime.RANGING: RangingRegimeRule(),
+            MarketRegime.TRENDING: TrendingRegimeRule(),
+            MarketRegime.VOLATILE: VolatileRegimeRule(),
+            MarketRegime.DORMANT: DormantRegimeRule()
         }
         
-        # Dynamic weights based on performance
-        self.detector_weights = defaultdict(lambda: 0.25)
-        self.performance_history = defaultdict(list)
-        self.max_history = 100
+    async def detect(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        scores = {}
+        for regime, rule in self.rules.items():
+            scores[regime] = rule.calculate_score(features)
         
-    async def detect_regime(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
-        """Ensemble prediction with weighted voting"""
-        predictions = {}
-        confidences = {}
+        best_regime = max(scores, key=scores.get)
+        confidence = scores[best_regime]
+        return best_regime, confidence
+
+class GMMRegimeDetector:
+    """Gaussian Mixture Model detector"""
+    def __init__(self, n_components: int = 4):
+        self.gmm = GaussianMixture(
+            n_components=n_components,
+            covariance_type='diag',  # ใช้ diagonal แทน full เพื่อลด overfitting
+            n_init=3,
+            random_state=42
+        )
+        self.scaler = StandardScaler()
+        self.is_fitted = False
+        self.regime_mapping = {0: MarketRegime.RANGING, 1: MarketRegime.TRENDING, 
+                              2: MarketRegime.VOLATILE, 3: MarketRegime.DORMANT}
         
-        # Simple ensemble simulation for now
-        # In real implementation, this would call actual detectors
+    async def detect(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        if not self.is_fitted:
+            return MarketRegime.RANGING, 0.5
+            
+        # Convert features to array
+        feature_array = np.array([list(features.values())]).reshape(1, -1)
+        scaled_features = self.scaler.transform(feature_array)
         
-        # Simulate predictions based on features
+        # Predict cluster and confidence
+        cluster = self.gmm.predict(scaled_features)[0]
+        probabilities = self.gmm.predict_proba(scaled_features)[0]
+        confidence = np.max(probabilities)
+        
+        regime = self.regime_mapping.get(cluster, MarketRegime.RANGING)
+        return regime, confidence
+
+class RandomForestRegimeDetector:
+    """Random Forest with overfitting prevention"""
+    def __init__(self):
+        self.rf = RandomForestClassifier(
+            n_estimators=50,  # ลดจาก 100
+            max_depth=5,      # จำกัด depth
+            min_samples_split=20,  # เพิ่ม min samples
+            min_samples_leaf=10,
+            random_state=42
+        )
+        self.is_fitted = False
+        self.scaler = StandardScaler()
+        
+    async def detect(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        if not self.is_fitted:
+            return MarketRegime.RANGING, 0.5
+            
+        # Convert features to array
+        feature_array = np.array([list(features.values())]).reshape(1, -1)
+        scaled_features = self.scaler.transform(feature_array)
+        
+        # Predict with probability
+        probabilities = self.rf.predict_proba(scaled_features)[0]
+        predicted_idx = np.argmax(probabilities)
+        confidence = probabilities[predicted_idx]
+        
+        # Map to regime
+        regime_list = list(MarketRegime)
+        regime = regime_list[predicted_idx] if predicted_idx < len(regime_list) else MarketRegime.RANGING
+        
+        return regime, confidence
+
+class NeuralNetworkRegimeDetector:
+    """Simple NN with regularization"""
+    def __init__(self):
+        self.nn = MLPClassifier(
+            hidden_layer_sizes=(20, 10),  # Small network
+            activation='relu',
+            alpha=0.01,  # L2 regularization
+            early_stopping=True,
+            validation_fraction=0.2,
+            n_iter_no_change=20,
+            random_state=42
+        )
+        self.is_fitted = False
+        self.scaler = StandardScaler()
+        
+    async def detect(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        if not self.is_fitted:
+            return MarketRegime.RANGING, 0.5
+            
+        # Convert features to array
+        feature_array = np.array([list(features.values())]).reshape(1, -1)
+        scaled_features = self.scaler.transform(feature_array)
+        
+        # Predict with probability
+        probabilities = self.nn.predict_proba(scaled_features)[0]
+        predicted_idx = np.argmax(probabilities)
+        confidence = probabilities[predicted_idx]
+        
+        # Map to regime
+        regime_list = list(MarketRegime)
+        regime = regime_list[predicted_idx] if predicted_idx < len(regime_list) else MarketRegime.RANGING
+        
+        return regime, confidence
+
+class SimpleThresholdDetector:
+    """Simple threshold-based detection"""
+    def __init__(self):
+        self.thresholds = {
+            'volatility': {'low': 0.0005, 'high': 0.002},
+            'trend': {'weak': 0.3, 'strong': 0.7},
+            'volume': {'low': 0.5, 'high': 2.0}
+        }
+        
+    async def detect(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
         volatility = features.get('volatility_5m', 0.001)
         trend_strength = abs(features.get('trend_strength', 0))
         volume_ratio = features.get('volume_ratio', 1.0)
         
-        # Rule-based prediction
-        if trend_strength > 0.5:
-            predictions['rule_based'] = MarketRegime.TRENDING
-            confidences['rule_based'] = trend_strength
-        elif volatility > 0.002:
-            predictions['rule_based'] = MarketRegime.VOLATILE  
-            confidences['rule_based'] = min(volatility * 500, 1.0)
-        elif volume_ratio < 0.3:
-            predictions['rule_based'] = MarketRegime.DORMANT
-            confidences['rule_based'] = 1.0 - volume_ratio
+        # Simple threshold logic
+        if trend_strength > self.thresholds['trend']['strong']:
+            return MarketRegime.TRENDING, 0.8
+        elif volatility > self.thresholds['volatility']['high']:
+            return MarketRegime.VOLATILE, 0.7
+        elif volume_ratio < self.thresholds['volume']['low']:
+            return MarketRegime.DORMANT, 0.6
         else:
-            predictions['rule_based'] = MarketRegime.RANGING
-            confidences['rule_based'] = 0.6
-            
-        # GMM prediction (simplified)
-        predictions['gmm'] = predictions['rule_based']  # Same for now
-        confidences['gmm'] = confidences['rule_based'] * 0.8
+            return MarketRegime.RANGING, 0.6
+
+
+class EnsembleRegimeDetector:
+    """Ensemble of multiple regime detection methods with overfitting prevention"""
+    
+    def __init__(self):
+        # สร้าง actual detector instances
+        self.detectors = {
+            'rule_based': RuleBasedRegimeDetector(),
+            'gmm': GMMRegimeDetector(),
+            'rf': RandomForestRegimeDetector(),
+            'nn': NeuralNetworkRegimeDetector(),
+            'simple': SimpleThresholdDetector()
+        }
         
-        # RF prediction (simplified)
-        predictions['rf'] = predictions['rule_based']  # Same for now
-        confidences['rf'] = confidences['rule_based'] * 0.9
+        # Dynamic weights with decay for poor performers
+        self.detector_weights = defaultdict(lambda: 0.2)  # Start equal
+        self.performance_history = defaultdict(list)
+        self.weight_decay_factor = 0.95
+        self.min_weight = 0.05
+        self.max_history = 500  # เพิ่มจาก 100
         
-        # Simple threshold prediction
-        predictions['simple'] = predictions['rule_based']  # Same for now
-        confidences['simple'] = confidences['rule_based'] * 0.7
-                
-        # Weighted voting
+        # Overfitting detection
+        self.consistency_threshold = 0.8
+        self.min_samples_for_weight_update = 50
+        self.consistency_score = 1.0
+        
+    async def detect_regime(self, features: Dict[str, float]) -> Tuple[MarketRegime, float]:
+        """Ensemble prediction with weighted voting and consistency check"""
+        predictions = {}
+        confidences = {}
+        
+        # Collect predictions from all detectors
+        for name, detector in self.detectors.items():
+            try:
+                regime, confidence = await detector.detect(features)
+                predictions[name] = regime
+                confidences[name] = confidence
+            except Exception as e:
+                logger.warning(f"Detector {name} failed: {e}")
+                continue
+        
+        # Check for consistency (overfitting indicator)
+        unique_predictions = len(set(predictions.values()))
+        self.consistency_score = 1.0 - (unique_predictions - 1) / len(self.detectors)
+        
+        if self.consistency_score < self.consistency_threshold:
+            logger.warning(f"Low detector consistency: {self.consistency_score:.2f}")
+            # Reduce weights of inconsistent detectors
+            self._penalize_inconsistent_detectors(predictions)
+        
+        # Weighted voting with confidence
         regime_votes = defaultdict(float)
         total_weight = 0
         
         for name, regime in predictions.items():
+            # Apply weight decay for poor performers
             weight = self.detector_weights[name] * confidences[name]
+            weight = max(weight, self.min_weight)  # Ensure minimum weight
+            
             regime_votes[regime] += weight
             total_weight += weight
-            
+        
         if total_weight == 0:
             return MarketRegime.RANGING, 0.5
-            
-        # Normalize and select best
+        
+        # Select best regime
         best_regime = max(regime_votes, key=regime_votes.get)
         ensemble_confidence = regime_votes[best_regime] / total_weight
         
-        return best_regime, ensemble_confidence
+        # Adjust confidence based on consistency
+        final_confidence = ensemble_confidence * (0.5 + 0.5 * self.consistency_score)
+        
+        return best_regime, final_confidence
+    
+    def _penalize_inconsistent_detectors(self, predictions: Dict[str, MarketRegime]):
+        """Penalize detectors that disagree with majority"""
+        # Find majority prediction
+        regime_counts = defaultdict(int)
+        for regime in predictions.values():
+            regime_counts[regime] += 1
+        
+        majority_regime = max(regime_counts, key=regime_counts.get)
+        
+        # Penalize minority detectors
+        for name, regime in predictions.items():
+            if regime != majority_regime:
+                self.detector_weights[name] *= self.weight_decay_factor
+                self.detector_weights[name] = max(self.detector_weights[name], self.min_weight)
         
     async def update_weights(self, actual_regime: MarketRegime, features: Dict[str, float]):
         """Update detector weights based on accuracy"""
@@ -633,26 +790,40 @@ class MarketRegimeDetector:
         return self._select_regime(regime_scores)
         
     async def _is_overfitting(self) -> bool:
-        """Check if ensemble is overfitting"""
+        """Enhanced overfitting detection"""
         if len(self.regime_history) < 100:
             return False
-            
-        # Get recent predictions and check consistency
+        
         recent = list(self.regime_history)[-100:]
         
-        # Calculate prediction variance
+        # Check 1: Excessive regime changes
         regime_changes = sum(
             1 for i in range(1, len(recent)) 
             if recent[i].regime != recent[i-1].regime
         )
         change_rate = regime_changes / len(recent)
         
-        # High change rate might indicate overfitting
-        if change_rate > 0.5:  # Changing regime more than 50% of the time
-            logger.warning("High regime change rate detected, possible overfitting")
-            return True
-            
-        return False
+        # Check 2: Low confidence persistence
+        avg_confidence = np.mean([s.confidence for s in recent])
+        
+        # Check 3: Detector disagreement
+        if hasattr(self.ensemble_detector, 'consistency_score'):
+            consistency = self.ensemble_detector.consistency_score
+        else:
+            consistency = 1.0
+        
+        # Overfitting indicators
+        is_overfitting = (
+            change_rate > 0.3 or  # Changing regime > 30% of time
+            avg_confidence < 0.6 or  # Low average confidence
+            consistency < 0.7  # Low detector agreement
+        )
+        
+        if is_overfitting:
+            logger.warning(f"Overfitting detected - Change rate: {change_rate:.2f}, "
+                          f"Avg confidence: {avg_confidence:.2f}, Consistency: {consistency:.2f}")
+        
+        return is_overfitting
         
     async def _calculate_regime_scores(self, features: Dict[str, float]) -> Dict[MarketRegime, float]:
         """Calculate scores for each regime"""

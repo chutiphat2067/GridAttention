@@ -22,6 +22,8 @@ import pandas as pd
 
 # Third-party imports
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from scipy.stats import ks_2samp
 
 # Local imports
 from market_regime_detector import MarketRegime
@@ -41,6 +43,12 @@ MAX_GRID_SPACING = 0.01  # 1%
 MIN_GRID_LEVELS = 2
 MAX_GRID_LEVELS = 20
 STRATEGY_CACHE_TTL = 60  # seconds
+
+# Validation constants
+VALIDATION_CONFIDENCE_THRESHOLD = 0.7
+MIN_SAMPLES_FOR_VALIDATION = 100
+MAX_STRATEGY_SWITCHES_PER_HOUR = 3
+PERFORMANCE_DEGRADATION_THRESHOLD = 0.2
 
 
 # Enums
@@ -952,23 +960,44 @@ class GridStrategySelector:
             await self._learn_from_performance(regime)
             
     async def _learn_from_performance(self, regime: MarketRegime) -> None:
-        """Learn parameter adjustments with validation"""
+        """Conservative learning with multiple validation checks"""
         history = self.performance_history[regime]
         
-        # Need more data for reliable learning
-        if len(history) < 50:  # Increased from 20
+        if len(history) < MIN_SAMPLES_FOR_LEARNING:
             return
-            
+        
         # Check cooldown
         if time.time() - self.adjustment_cooldown[regime] < self.cooldown_period:
             return
-            
-        # Perform cross-validation before adjusting
+        
+        # Check strategy switching frequency
+        recent_switches = self._count_recent_strategy_switches()
+        if recent_switches > MAX_STRATEGY_SWITCHES_PER_HOUR:
+            logger.warning(f"Too many strategy switches: {recent_switches}")
+            return
+        
+        # Perform cross-validation
         cv_result = await self._cross_validate_adjustments(regime, history)
         
         if not cv_result['is_valid']:
-            logger.warning(f"Cross-validation failed for {regime}, skipping adjustment")
+            logger.warning(f"Cross-validation failed for {regime}: {cv_result.get('reason')}")
             return
+        
+        # Additional validation: performance trend
+        performance_trend = self._analyze_performance_trend(history)
+        
+        if performance_trend['is_degrading']:
+            logger.warning(f"Performance degrading for {regime}, checking for overfitting")
+            
+            # Run overfitting detection
+            overfitting_check = await self._check_strategy_overfitting(regime, history)
+            
+            if overfitting_check['is_overfitting']:
+                # Reset to default parameters
+                logger.warning(f"Overfitting detected for {regime}, resetting parameters")
+                self.strategy_adjustments[regime] = {}
+                self.adjustment_cooldown[regime] = time.time() + self.cooldown_period * 2
+                return
             
         # Calculate performance metrics
         recent_history = history[-100:]  # Use more data
@@ -1021,59 +1050,210 @@ class GridStrategySelector:
                 logger.warning(f"Adjustments for {regime} failed validation")
                 
     async def _cross_validate_adjustments(self, regime: MarketRegime, history: List[Dict]) -> Dict[str, Any]:
-        """Cross-validate proposed adjustments"""
-        if len(history) < 100:
+        """Enhanced cross-validation with multiple metrics"""
+        if len(history) < MIN_SAMPLES_FOR_VALIDATION:
             return {'is_valid': False, 'reason': 'Insufficient data'}
-            
-        # Convert history to features and outcomes
-        features = []
+        
+        # Prepare data
+        features_list = []
         outcomes = []
+        timestamps = []
         
         for h in history:
-            features.append({
-                'volatility': h.get('metadata', {}).get('volatility', 0.001),
-                'spread': h.get('metadata', {}).get('spread', 1),
-                'volume_ratio': h.get('metadata', {}).get('volume_ratio', 1)
-            })
+            features_list.append(h.get('metadata', {}).get('features', {}))
             outcomes.append(1 if h['success'] else 0)
-            
-        features_df = pd.DataFrame(features)
+            timestamps.append(h['timestamp'])
+        
+        features_df = pd.DataFrame(features_list)
         outcomes_array = np.array(outcomes)
         
-        # Perform time series cross-validation
-        cv_scores = []
+        # Time series cross-validation with gap
+        cv_results = []
         
         for train_idx, test_idx in self.cv_splitter.split(features_df):
-            if len(train_idx) < 20 or len(test_idx) < 10:
+            if len(train_idx) < 50 or len(test_idx) < 20:
                 continue
+            
+            # Add gap between train and test to prevent leakage
+            gap_size = 5
+            if test_idx[0] - train_idx[-1] < gap_size:
+                train_idx = train_idx[:-gap_size]
+            
+            # Get train/test data
+            train_outcomes = outcomes_array[train_idx]
+            test_outcomes = outcomes_array[test_idx]
+            
+            # Calculate metrics
+            train_success = train_outcomes.mean()
+            test_success = test_outcomes.mean()
+            
+            # Statistical tests
+            if len(train_outcomes) > 10 and len(test_outcomes) > 10:
+                # Kolmogorov-Smirnov test for distribution similarity
+                ks_stat, ks_pvalue = ks_2samp(train_outcomes, test_outcomes)
                 
-            # Simulate strategy performance
-            train_success = outcomes_array[train_idx].mean()
-            test_success = outcomes_array[test_idx].mean()
-            
-            # Check for overfitting
-            performance_gap = abs(train_success - test_success)
-            cv_scores.append({
-                'train': train_success,
-                'test': test_success,
-                'gap': performance_gap
-            })
-            
-        if not cv_scores:
-            return {'is_valid': False, 'reason': 'No valid CV splits'}
-            
-        # Analyze CV results
-        avg_gap = np.mean([s['gap'] for s in cv_scores])
-        max_gap = max(s['gap'] for s in cv_scores)
+                cv_results.append({
+                    'train': train_success,
+                    'test': test_success,
+                    'gap': abs(train_success - test_success),
+                    'ks_stat': ks_stat,
+                    'ks_pvalue': ks_pvalue
+                })
         
-        is_valid = avg_gap < 0.1 and max_gap < 0.15  # Conservative thresholds
+        if not cv_results:
+            return {'is_valid': False, 'reason': 'No valid CV splits'}
+        
+        # Analyze results
+        avg_gap = np.mean([r['gap'] for r in cv_results])
+        max_gap = max(r['gap'] for r in cv_results)
+        avg_ks_pvalue = np.mean([r['ks_pvalue'] for r in cv_results])
+        
+        # Validation criteria (more strict)
+        is_valid = (
+            avg_gap < 0.1 and  # Average performance gap < 10%
+            max_gap < 0.15 and  # Max gap < 15%
+            avg_ks_pvalue > 0.05  # Distributions are similar
+        )
         
         return {
             'is_valid': is_valid,
             'avg_gap': avg_gap,
             'max_gap': max_gap,
-            'cv_scores': cv_scores
+            'avg_ks_pvalue': avg_ks_pvalue,
+            'cv_scores': cv_results,
+            'confidence': 1.0 - avg_gap if is_valid else 0.0
         }
+        
+        # Only adjust if performance is consistently poor and stable
+        recent_performance = self._calculate_stable_metrics(history[-100:])
+        
+        if recent_performance['success_rate'] < 0.45 and recent_performance['stability'] > 0.8:
+            # Calculate minimal adjustments
+            adjustments = self._calculate_conservative_adjustments(
+                regime, 
+                recent_performance,
+                cv_result['confidence']
+            )
+            
+            # Validate adjustments
+            if await self._validate_adjustments(adjustments, regime):
+                self.strategy_adjustments[regime] = adjustments
+                self.adjustment_cooldown[regime] = time.time()
+                logger.info(f"Applied conservative adjustments for {regime}: {adjustments}")
+    
+    def _count_recent_strategy_switches(self) -> int:
+        """Count strategy switches in last hour"""
+        hour_ago = time.time() - 3600
+        switches = 0
+        
+        for history in self.performance_history.values():
+            recent = [h for h in history if h['timestamp'] > hour_ago]
+            for i in range(1, len(recent)):
+                if recent[i].get('strategy') != recent[i-1].get('strategy'):
+                    switches += 1
+        
+        return switches
+
+    def _analyze_performance_trend(self, history: List[Dict]) -> Dict[str, Any]:
+        """Analyze if performance is degrading over time"""
+        if len(history) < 50:
+            return {'is_degrading': False}
+        
+        # Split into windows
+        window_size = 20
+        windows = []
+        
+        for i in range(0, len(history) - window_size, window_size // 2):
+            window = history[i:i + window_size]
+            success_rate = sum(1 for h in window if h['success']) / len(window)
+            windows.append(success_rate)
+        
+        if len(windows) < 3:
+            return {'is_degrading': False}
+        
+        # Check for downward trend
+        trend = np.polyfit(range(len(windows)), windows, 1)[0]
+        
+        return {
+            'is_degrading': trend < -0.01,  # Declining more than 1% per window
+            'trend': trend,
+            'recent_performance': windows[-1] if windows else 0
+        }
+
+    async def _check_strategy_overfitting(self, regime: MarketRegime, 
+                                        history: List[Dict]) -> Dict[str, bool]:
+        """Check if strategy is overfitting to recent data"""
+        if len(history) < 200:
+            return {'is_overfitting': False}
+        
+        # Compare old vs new performance
+        mid_point = len(history) // 2
+        old_data = history[:mid_point]
+        new_data = history[mid_point:]
+        
+        old_success = sum(1 for h in old_data if h['success']) / len(old_data)
+        new_success = sum(1 for h in new_data if h['success']) / len(new_data)
+        
+        # Check parameter volatility
+        param_changes = self._calculate_parameter_volatility(regime)
+        
+        is_overfitting = (
+            (old_success - new_success) > PERFORMANCE_DEGRADATION_THRESHOLD or
+            param_changes['volatility'] > 0.3
+        )
+        
+        return {
+            'is_overfitting': is_overfitting,
+            'old_performance': old_success,
+            'new_performance': new_success,
+            'parameter_volatility': param_changes['volatility']
+        }
+
+    def _calculate_stable_metrics(self, history: List[Dict]) -> Dict[str, float]:
+        """Calculate metrics with stability score"""
+        if not history:
+            return {'success_rate': 0, 'stability': 0}
+        
+        # Window-based calculation
+        window_size = 10
+        window_metrics = []
+        
+        for i in range(0, len(history) - window_size, window_size):
+            window = history[i:i + window_size]
+            success_rate = sum(1 for h in window if h['success']) / len(window)
+            window_metrics.append(success_rate)
+        
+        if not window_metrics:
+            return {'success_rate': 0, 'stability': 0}
+        
+        return {
+            'success_rate': np.mean(window_metrics),
+            'stability': 1.0 - np.std(window_metrics)  # Lower std = higher stability
+        }
+
+    def _calculate_conservative_adjustments(self, regime: MarketRegime,
+                                          performance: Dict[str, float],
+                                          confidence: float) -> Dict[str, float]:
+        """Calculate very conservative parameter adjustments"""
+        adjustments = {}
+        
+        # Maximum 5% adjustment, scaled by confidence
+        max_adjustment = 0.05 * confidence
+        
+        # Only adjust most critical parameters
+        if performance['success_rate'] < 0.4:
+            adjustments['spacing'] = 1.0 + max_adjustment
+            adjustments['levels'] = 1.0 - max_adjustment * 0.5  # Reduce levels more conservatively
+        
+        return adjustments
+    
+    def _calculate_parameter_volatility(self, regime: MarketRegime) -> Dict[str, float]:
+        """Calculate parameter change volatility"""
+        if regime not in self.strategy_adjustments:
+            return {'volatility': 0.0}
+        
+        # This is simplified - in real implementation would track parameter history
+        return {'volatility': 0.1}  # Placeholder
         
     async def _validate_adjustments(self, adjustments: Dict[str, float], regime: MarketRegime) -> bool:
         """Validate that adjustments won't cause overfitting"""

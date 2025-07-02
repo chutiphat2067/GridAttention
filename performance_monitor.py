@@ -475,6 +475,14 @@ class PrometheusMetrics:
         self.grid_fill_rate = Gauge('grid_fill_rate', 'Grid order fill rate')
         self.active_grids = Gauge('active_grids', 'Number of active grid strategies')
         
+        # Overfitting metrics
+        self.overfitting_score = Gauge('overfitting_score', 'Current overfitting score (0-1)')
+        self.train_test_gap = Gauge('train_test_performance_gap', 'Gap between training and live performance')
+        self.model_confidence = Gauge('model_confidence_score', 'Model confidence score')
+        self.parameter_changes = Counter('parameter_changes_total', 'Total parameter changes')
+        self.strategy_switches = Counter('strategy_switches_total', 'Total strategy switches')
+        self.validation_failures = Counter('validation_failures_total', 'Total validation failures')
+        
     def update_trading_metrics(self, metrics: TradingMetrics):
         """Update Prometheus trading metrics"""
         self.trades_total.inc(metrics.total_trades)
@@ -1174,6 +1182,107 @@ class StressTester:
         }
 
 
+class OverfittingTracker:
+    """Track overfitting indicators across the system"""
+    
+    def __init__(self):
+        self.indicators = {
+            'performance_divergence': deque(maxlen=100),
+            'confidence_calibration': deque(maxlen=100),
+            'parameter_volatility': deque(maxlen=100),
+            'prediction_variance': deque(maxlen=100),
+            'regime_stability': deque(maxlen=100)
+        }
+        self.overfitting_events = []
+        self.last_check = 0
+        
+    def update_indicator(self, indicator: str, value: float):
+        """Update overfitting indicator"""
+        if indicator in self.indicators:
+            self.indicators[indicator].append({
+                'value': value,
+                'timestamp': time.time()
+            })
+    
+    def get_overfitting_score(self) -> float:
+        """Calculate composite overfitting score"""
+        scores = []
+        
+        # Performance divergence
+        if self.indicators['performance_divergence']:
+            recent = [x['value'] for x in list(self.indicators['performance_divergence'])[-20:]]
+            avg_divergence = np.mean(recent)
+            scores.append(min(avg_divergence / 0.2, 1.0))  # Normalize to 0-1
+        
+        # Confidence calibration
+        if self.indicators['confidence_calibration']:
+            recent = [x['value'] for x in list(self.indicators['confidence_calibration'])[-20:]]
+            avg_error = np.mean(recent)
+            scores.append(min(avg_error / 0.3, 1.0))
+        
+        # Parameter volatility
+        if self.indicators['parameter_volatility']:
+            recent = [x['value'] for x in list(self.indicators['parameter_volatility'])[-20:]]
+            avg_volatility = np.mean(recent)
+            scores.append(min(avg_volatility / 0.5, 1.0))
+        
+        return np.mean(scores) if scores else 0.0
+    
+    def detect_overfitting_event(self) -> Optional[Dict[str, Any]]:
+        """Detect if overfitting event is occurring"""
+        score = self.get_overfitting_score()
+        
+        if score > 0.7:  # High overfitting risk
+            event = {
+                'timestamp': time.time(),
+                'score': score,
+                'indicators': {k: list(v)[-1]['value'] if v else 0 
+                             for k, v in self.indicators.items()},
+                'severity': 'HIGH' if score > 0.8 else 'MEDIUM'
+            }
+            self.overfitting_events.append(event)
+            return event
+        
+        return None
+
+
+class ModelStabilityMonitor:
+    """Monitor model stability metrics"""
+    
+    def __init__(self):
+        self.parameter_changes = defaultdict(list)
+        self.prediction_consistency = deque(maxlen=100)
+        self.feature_importance_history = defaultdict(list)
+        
+    def track_parameter_change(self, param: str, old_value: float, new_value: float):
+        """Track parameter changes"""
+        change = {
+            'timestamp': time.time(),
+            'old': old_value,
+            'new': new_value,
+            'magnitude': abs(new_value - old_value) / abs(old_value) if old_value != 0 else float('inf')
+        }
+        self.parameter_changes[param].append(change)
+    
+    def get_stability_score(self) -> float:
+        """Calculate model stability score"""
+        if not self.parameter_changes:
+            return 1.0
+        
+        # Calculate change frequency
+        hour_ago = time.time() - 3600
+        recent_changes = sum(
+            1 for changes in self.parameter_changes.values()
+            for change in changes
+            if change['timestamp'] > hour_ago
+        )
+        
+        # Normalize (fewer changes = higher stability)
+        stability = 1.0 / (1.0 + recent_changes / 10)
+        
+        return stability
+
+
 class PerformanceMonitor:
     """
     Monitor system and trading performance with stress testing
@@ -1189,15 +1298,41 @@ class PerformanceMonitor:
         self.system_monitor = SystemMonitor()
         self.stress_tester = StressTester()
         
-        # Add overfitting monitoring
+        # Enhanced overfitting monitoring and metrics tracking
         self.overfitting_detector = OverfittingDetector()
         self.overfitting_monitor = OverfittingMonitor(self.overfitting_detector)
-        self.overfitting_metrics = deque(maxlen=1000)
+        self.overfitting_metrics = deque(maxlen=2000)  # เพิ่มเป็น 2000
         
-        # Enhanced metrics for overfitting detection
-        self.train_test_performance_gap = deque(maxlen=100)
-        self.model_confidence_history = deque(maxlen=1000)
-        self.parameter_change_history = deque(maxlen=100)
+        # Overfitting monitoring
+        self.overfitting_tracker = OverfittingTracker()
+        self.model_stability_monitor = ModelStabilityMonitor()
+        self.validation_history = deque(maxlen=1000)
+        
+        # Performance comparison
+        self.backtest_performance = {}
+        self.live_performance = {}
+        self.performance_gap_history = deque(maxlen=100)
+        
+        # Comprehensive overfitting metrics tracking
+        self.train_test_performance_gap = deque(maxlen=500)  # เพิ่มจาก 100
+        self.model_confidence_history = deque(maxlen=2000)  # เพิ่มจาก 1000
+        self.parameter_change_history = deque(maxlen=500)  # เพิ่มจาก 100
+        self.validation_performance_history = deque(maxlen=1000)
+        self.feature_importance_drift = deque(maxlen=200)
+        self.prediction_stability_metrics = deque(maxlen=300)
+        self.cross_validation_scores = deque(maxlen=100)
+        self.overfitting_severity_history = deque(maxlen=200)
+        
+        # Real-time overfitting detection
+        self.live_performance_tracker = deque(maxlen=100)
+        self.training_performance_tracker = deque(maxlen=100)
+        self.overfitting_alert_cooldown = 300  # 5 minutes between alerts
+        self.last_overfitting_alert = 0
+        
+        # Performance degradation tracking
+        self.performance_baseline = None
+        self.degradation_threshold = 0.15  # 15% performance drop threshold
+        self.recent_performance_window = deque(maxlen=50)
         
         # State
         self._running = False
@@ -1389,14 +1524,29 @@ class PerformanceMonitor:
             self.prometheus_metrics.update_attention_metrics(attention_metrics)
             
         # Collect overfitting metrics
-        overfitting_metrics = await self._get_overfitting_metrics()
-        self.overfitting_metrics.append(overfitting_metrics)
+        overfitting_data = await self._collect_overfitting_metrics()
+        
+        # Update overfitting tracker
+        self.overfitting_tracker.update_indicator(
+            'performance_divergence',
+            overfitting_data.get('train_test_gap', 0)
+        )
         
         # Update Prometheus metrics
-        if hasattr(self, 'prometheus_metrics'):
-            self.prometheus_metrics.overfitting_score.set(overfitting_metrics.get('overfitting_score', 0))
-            self.prometheus_metrics.train_test_gap.set(overfitting_metrics.get('performance_gap', 0))
-            self.prometheus_metrics.model_confidence.set(overfitting_metrics.get('model_confidence', 1))
+        self.prometheus_metrics.overfitting_score.set(
+            self.overfitting_tracker.get_overfitting_score()
+        )
+        self.prometheus_metrics.train_test_gap.set(
+            overfitting_data.get('train_test_gap', 0)
+        )
+        self.prometheus_metrics.model_confidence.set(
+            overfitting_data.get('avg_confidence', 1)
+        )
+        
+        # Check for overfitting events
+        event = self.overfitting_tracker.detect_overfitting_event()
+        if event:
+            await self._handle_overfitting_event(event)
             
     async def _get_latest_trading_metrics(self) -> TradingMetrics:
         """Get latest trading metrics"""
@@ -1470,6 +1620,101 @@ class PerformanceMonitor:
             # Notify other components to reduce risk
             if hasattr(self, 'risk_manager'):
                 self.risk_manager.risk_reduction_mode = True
+    
+    async def _collect_overfitting_metrics(self) -> Dict[str, Any]:
+        """Collect comprehensive overfitting metrics"""
+        metrics = {
+            'timestamp': time.time(),
+            'train_test_gap': 0,
+            'avg_confidence': 1,
+            'parameter_volatility': 0,
+            'prediction_variance': 0,
+            'validation_score': 1
+        }
+        
+        # Compare backtest vs live performance
+        if self.backtest_performance and self.live_performance:
+            backtest_wr = self.backtest_performance.get('win_rate', 0.5)
+            live_wr = self.live_performance.get('win_rate', 0.5)
+            metrics['train_test_gap'] = abs(backtest_wr - live_wr)
+            
+            # Track gap history
+            self.performance_gap_history.append({
+                'gap': metrics['train_test_gap'],
+                'timestamp': time.time()
+            })
+        
+        # Get model confidence from components
+        if hasattr(self, 'components') and 'regime_detector' in self.components:
+            regime_confidence = await self._get_regime_confidence()
+            metrics['avg_confidence'] = regime_confidence
+            
+            self.overfitting_tracker.update_indicator(
+                'confidence_calibration',
+                1 - regime_confidence  # Lower confidence = higher calibration error
+            )
+        
+        # Get parameter stability
+        stability_score = self.model_stability_monitor.get_stability_score()
+        metrics['parameter_volatility'] = 1 - stability_score
+        
+        self.overfitting_tracker.update_indicator(
+            'parameter_volatility',
+            metrics['parameter_volatility']
+        )
+        
+        # Validation metrics
+        if self.validation_history:
+            recent_validations = list(self.validation_history)[-20:]
+            validation_failures = sum(1 for v in recent_validations if not v['passed'])
+            metrics['validation_score'] = 1 - (validation_failures / len(recent_validations))
+        
+        return metrics
+
+    async def _get_regime_confidence(self) -> float:
+        """Get average regime detection confidence"""
+        if not hasattr(self, 'components') or 'regime_detector' not in self.components:
+            return 1.0
+        
+        detector = self.components['regime_detector']
+        
+        # Get recent regime detections
+        if hasattr(detector, 'get_regime_history'):
+            recent_states = detector.get_regime_history(50)
+            
+            if not recent_states:
+                return 1.0
+            
+            confidences = [state.confidence for state in recent_states]
+            return np.mean(confidences)
+        
+        return 1.0
+
+    async def _handle_overfitting_event(self, event: Dict[str, Any]):
+        """Handle detected overfitting event"""
+        logger.warning(f"Overfitting event detected: score={event['score']:.2f}, severity={event['severity']}")
+        
+        # Create alert
+        alert = Alert(
+            alert_id=f"overfitting_{int(time.time())}",
+            level=AlertLevel.WARNING if event['severity'] == 'MEDIUM' else AlertLevel.ERROR,
+            category='model',
+            message=f"Overfitting detected with score {event['score']:.2f}",
+            details=event
+        )
+        
+        await self.alert_manager.send_alerts([alert])
+        
+        # Notify risk management
+        if hasattr(self, 'risk_manager'):
+            self.risk_manager.overfitting_detected = True
+            
+        # Track event
+        self.overfitting_metrics.append({
+            'event': event,
+            'timestamp': time.time(),
+            'actions_taken': ['alert_sent', 'risk_notified']
+        })
         
     async def _get_attention_metrics(self) -> AttentionMetrics:
         """Get attention system metrics"""
@@ -1593,12 +1838,25 @@ class PerformanceMonitor:
             'report_timestamp': time.time()
         }
         
-        base_report['overfitting_analysis'] = {
-            'current_status': overfitting_report['risk_assessment'],
-            'detection_summary': self.overfitting_detector.get_detection_summary(),
-            'recent_metrics': list(self.overfitting_metrics)[-10:] if self.overfitting_metrics else [],
-            'recommendations': overfitting_report.get('recommendations', [])
+        # Add comprehensive overfitting section
+        overfitting_analysis = {
+            'current_score': self.overfitting_tracker.get_overfitting_score(),
+            'indicators': {
+                name: list(values)[-1]['value'] if values else 0
+                for name, values in self.overfitting_tracker.indicators.items()
+            },
+            'recent_events': self.overfitting_tracker.overfitting_events[-5:],
+            'model_stability': self.model_stability_monitor.get_stability_score(),
+            'performance_gap': {
+                'current': self.performance_gap_history[-1]['gap'] if self.performance_gap_history else 0,
+                'trend': self._calculate_gap_trend(),
+                'average': np.mean([h['gap'] for h in self.performance_gap_history]) if self.performance_gap_history else 0
+            },
+            'validation_metrics': self._get_validation_summary(),
+            'recommendations': self._generate_overfitting_recommendations()
         }
+        
+        base_report['overfitting_analysis'] = overfitting_analysis
         
         # Add model stability metrics
         if self.parameter_change_history:
@@ -1608,8 +1866,88 @@ class PerformanceMonitor:
                 'avg_change_magnitude': np.mean([abs(c['magnitude']) for c in recent_changes]),
                 'change_frequency': len(recent_changes) / (50 * 300)  # Changes per 5-min period
             }
+        
+        # Add risk warnings
+        if overfitting_analysis['current_score'] > 0.7:
+            base_report['warnings'] = base_report.get('warnings', [])
+            base_report['warnings'].append({
+                'type': 'OVERFITTING_RISK',
+                'severity': 'HIGH' if overfitting_analysis['current_score'] > 0.8 else 'MEDIUM',
+                'message': 'System showing signs of overfitting, consider reducing model complexity'
+            })
             
         return base_report
+
+    def _calculate_gap_trend(self) -> str:
+        """Calculate performance gap trend"""
+        if len(self.performance_gap_history) < 10:
+            return 'insufficient_data'
+        
+        recent_gaps = [h['gap'] for h in list(self.performance_gap_history)[-20:]]
+        
+        # Simple trend detection
+        first_half = np.mean(recent_gaps[:10])
+        second_half = np.mean(recent_gaps[10:])
+        
+        if second_half > first_half * 1.2:
+            return 'worsening'
+        elif second_half < first_half * 0.8:
+            return 'improving'
+        else:
+            return 'stable'
+
+    def _get_validation_summary(self) -> Dict[str, Any]:
+        """Summarize validation metrics"""
+        if not self.validation_history:
+            return {'total': 0, 'passed': 0, 'failed': 0, 'rate': 0}
+        
+        recent = list(self.validation_history)[-100:]
+        
+        return {
+            'total': len(recent),
+            'passed': sum(1 for v in recent if v['passed']),
+            'failed': sum(1 for v in recent if not v['passed']),
+            'rate': sum(1 for v in recent if v['passed']) / len(recent),
+            'recent_failures': [v for v in recent[-10:] if not v['passed']]
+        }
+
+    def _generate_overfitting_recommendations(self) -> List[str]:
+        """Generate recommendations based on overfitting analysis"""
+        recommendations = []
+        
+        score = self.overfitting_tracker.get_overfitting_score()
+        
+        if score > 0.8:
+            recommendations.extend([
+                "CRITICAL: Immediately reduce model complexity",
+                "Disable complex features temporarily",
+                "Increase regularization parameters",
+                "Switch to conservative baseline strategies"
+            ])
+        elif score > 0.6:
+            recommendations.extend([
+                "Increase validation frequency",
+                "Add more regularization to models",
+                "Reduce parameter adjustment frequency",
+                "Monitor performance gap closely"
+            ])
+        elif score > 0.4:
+            recommendations.extend([
+                "Continue monitoring overfitting indicators",
+                "Consider adding data augmentation",
+                "Review recent parameter changes"
+            ])
+        
+        # Specific recommendations based on indicators
+        indicators = self.overfitting_tracker.indicators
+        
+        if indicators['performance_divergence'] and list(indicators['performance_divergence'])[-1]['value'] > 0.15:
+            recommendations.append("Large train-test gap detected, review model assumptions")
+        
+        if indicators['parameter_volatility'] and list(indicators['parameter_volatility'])[-1]['value'] > 0.3:
+            recommendations.append("High parameter volatility, implement stricter change controls")
+        
+        return recommendations
         
     async def save_metrics(self, filepath: str):
         """Save metrics to file"""
