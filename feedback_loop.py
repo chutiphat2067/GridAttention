@@ -1328,6 +1328,11 @@ class FeedbackLoop:
         self._in_recovery = False
         
         logger.info("Initialized Feedback Loop with Recovery and Gradual Optimization")
+    
+    def set_components(self, components: Dict[str, Any]):
+        """Set system components for feedback loop integration"""
+        self.components = components
+        logger.info(f"Updated FeedbackLoop with {len(components)} components: {list(components.keys())}")
         
     async def start(self):
         """Start feedback loop"""

@@ -64,7 +64,7 @@ class DashboardDataCollector:
         return 'STOPPED'
         
     async def _get_critical_metrics(self) -> Dict[str, Any]:
-        """Get critical trading metrics"""
+        """Get critical trading metrics with robust error handling"""
         perf_monitor = self.system.components.get('performance_monitor')
         risk_manager = self.system.components.get('risk_manager')
         overfitting = self.system.components.get('overfitting_detector')
@@ -78,85 +78,157 @@ class DashboardDataCollector:
             'latency': 0
         }
         
-        if perf_monitor:
-            trading_metrics = await perf_monitor.get_current_metrics()
-            metrics['pnl'] = trading_metrics.get('total_pnl', 0)
-            metrics['winRate'] = trading_metrics.get('win_rate', 0) * 100
-            metrics['drawdown'] = trading_metrics.get('current_drawdown', 0) * 100
+        # Safe performance metrics collection
+        try:
+            if perf_monitor and hasattr(perf_monitor, 'get_current_metrics'):
+                trading_metrics = await perf_monitor.get_current_metrics()
+                if trading_metrics:
+                    metrics['pnl'] = trading_metrics.get('total_pnl', 0)
+                    metrics['winRate'] = trading_metrics.get('win_rate', 0) * 100
+                    metrics['drawdown'] = trading_metrics.get('current_drawdown', 0) * 100
+        except Exception as e:
+            logger.warning(f"Performance metrics error: {e}")
             
-        if risk_manager:
-            positions = await risk_manager.get_open_positions()
-            metrics['openPositions'] = len(positions)
+        # Safe risk manager collection
+        try:
+            if risk_manager and hasattr(risk_manager, 'get_open_positions'):
+                positions = await risk_manager.get_open_positions()
+                metrics['openPositions'] = len(positions) if positions else 0
+        except Exception as e:
+            logger.warning(f"Risk manager error: {e}")
             
-        if overfitting:
-            metrics['overfittingScore'] = await overfitting.get_current_score()
+        # Safe overfitting detection
+        try:
+            if overfitting and hasattr(overfitting, 'get_current_score'):
+                score = await overfitting.get_current_score()
+                metrics['overfittingScore'] = score if score is not None else 0
+        except Exception as e:
+            logger.warning(f"Overfitting detector error: {e}")
             
-        # Get execution latency
-        execution = self.system.components.get('execution')
-        if execution:
-            metrics['latency'] = await execution.get_avg_latency()
+        # Safe execution latency
+        try:
+            execution = self.system.components.get('execution')
+            if execution and hasattr(execution, 'get_avg_latency'):
+                latency = await execution.get_avg_latency()
+                metrics['latency'] = latency if latency is not None else 0
+        except Exception as e:
+            logger.warning(f"Execution latency error: {e}")
             
         return metrics
         
     async def _get_learning_status(self) -> Dict[str, Any]:
-        """Get attention learning status"""
+        """Get attention learning status with error handling"""
         attention = self.system.components.get('attention')
         if not attention:
-            return {}
+            return {
+                'phase': 'unknown',
+                'observations': 0,
+                'phaseProgress': 0,
+                'timeToPhase': 0,
+                'learningRate': 0.001,
+                'warmupLoaded': False,
+                'topFeatures': []
+            }
             
-        state = await attention.get_attention_state()
-        
-        # Calculate time to next phase
-        obs_per_min = 30  # Estimate based on tick rate
-        thresholds = {
-            'learning': 2000,
-            'shadow': 500,
-            'active': 200
-        }
-        
-        current_obs = state['total_observations']
-        phase = state['phase']
-        
-        if phase == 'learning':
-            remaining = thresholds['learning'] - current_obs
-        elif phase == 'shadow':
-            remaining = thresholds['shadow'] - (current_obs - thresholds['learning'])
-        else:
-            remaining = 0
+        try:
+            # Safe state retrieval
+            state = {}
+            if hasattr(attention, 'get_attention_state'):
+                state = await attention.get_attention_state() or {}
             
-        time_to_phase = remaining / obs_per_min if remaining > 0 else 0
-        
-        return {
-            'phase': phase,
-            'observations': current_obs,
-            'phaseProgress': attention.get_learning_progress() * 100,
-            'timeToPhase': time_to_phase,
-            'learningRate': attention.config.get('learning_rate', 0.001),
-            'warmupLoaded': attention.warmup_loaded,
-            'topFeatures': list(state.get('feature_importance', {}).items())[:5]
-        }
+            # Calculate time to next phase
+            obs_per_min = 30  # Estimate based on tick rate
+            thresholds = {
+                'learning': 2000,
+                'shadow': 500,
+                'active': 200
+            }
+            
+            current_obs = state.get('total_observations', 0)
+            phase = state.get('phase', 'learning')
+            
+            if phase == 'learning':
+                remaining = thresholds['learning'] - current_obs
+            elif phase == 'shadow':
+                remaining = thresholds['shadow'] - (current_obs - thresholds['learning'])
+            else:
+                remaining = 0
+                
+            time_to_phase = remaining / obs_per_min if remaining > 0 else 0
+            
+            # Safe progress calculation
+            progress = 0
+            if hasattr(attention, 'get_learning_progress'):
+                try:
+                    progress = attention.get_learning_progress() * 100
+                except:
+                    progress = 0
+            
+            return {
+                'phase': phase,
+                'observations': current_obs,
+                'phaseProgress': progress,
+                'timeToPhase': time_to_phase,
+                'learningRate': getattr(attention, 'config', {}).get('learning_rate', 0.001),
+                'warmupLoaded': getattr(attention, 'warmup_loaded', False),
+                'topFeatures': list(state.get('feature_importance', {}).items())[:5]
+            }
+            
+        except Exception as e:
+            logger.error(f"Learning status error: {e}")
+            return {
+                'phase': 'error',
+                'observations': 0,
+                'phaseProgress': 0,
+                'timeToPhase': 0,
+                'learningRate': 0.001,
+                'warmupLoaded': False,
+                'topFeatures': []
+            }
         
     async def _get_augmentation_status(self) -> Dict[str, Any]:
-        """Get data augmentation status"""
-        if not self.system.augmentation_manager:
+        """Get data augmentation status with error handling"""
+        if not hasattr(self.system, 'augmentation_manager') or not self.system.augmentation_manager:
             return {
                 'status': 'inactive',
                 'factor': 1.0,
                 'totalAugmented': 0,
-                'quality': 0
+                'quality': 0,
+                'methodUsage': {},
+                'byPhase': {}
             }
             
-        dashboard_data = self.system.augmentation_manager.get_monitoring_dashboard()
-        stats = self.system.augmentation_manager.get_stats()
-        
-        return {
-            'status': 'active' if stats['total_augmented'] > 0 else 'inactive',
-            'factor': dashboard_data['summary'].get('average_factor', 1.0),
-            'totalAugmented': stats['total_augmented'],
-            'quality': dashboard_data['summary'].get('average_quality', 0),
-            'methodUsage': dashboard_data.get('method_usage', {}),
-            'byPhase': stats['augmentation_by_phase']
-        }
+        try:
+            dashboard_data = {}
+            stats = {}
+            
+            # Safe dashboard data retrieval
+            if hasattr(self.system.augmentation_manager, 'get_monitoring_dashboard'):
+                dashboard_data = self.system.augmentation_manager.get_monitoring_dashboard() or {}
+            
+            # Safe stats retrieval
+            if hasattr(self.system.augmentation_manager, 'get_stats'):
+                stats = self.system.augmentation_manager.get_stats() or {}
+            
+            return {
+                'status': 'active' if stats.get('total_augmented', 0) > 0 else 'inactive',
+                'factor': dashboard_data.get('summary', {}).get('average_factor', 1.0),
+                'totalAugmented': stats.get('total_augmented', 0),
+                'quality': dashboard_data.get('summary', {}).get('average_quality', 0),
+                'methodUsage': dashboard_data.get('method_usage', {}),
+                'byPhase': stats.get('augmentation_by_phase', {})
+            }
+            
+        except Exception as e:
+            logger.error(f"Augmentation status error: {e}")
+            return {
+                'status': 'error',
+                'factor': 1.0,
+                'totalAugmented': 0,
+                'quality': 0,
+                'methodUsage': {},
+                'byPhase': {}
+            }
         
     async def _get_trading_activity(self) -> Dict[str, Any]:
         """Get current trading activity"""
@@ -469,6 +541,10 @@ class DashboardServer:
         self.app.router.add_get('/api/data', self.get_data)
         self.app.router.add_post('/api/action', self.execute_action)
         self.app.router.add_get('/api/export/{type}', self.export_data)
+        # Add augmentation dashboard endpoint
+        self.app.router.add_get('/augmentation/dashboard', self.get_augmentation_dashboard)
+        # Add static file serving for augmentation dashboard
+        self.app.router.add_get('/augmentation', self.serve_augmentation_dashboard)
         
     async def serve_dashboard(self, request):
         """Serve the dashboard HTML"""
@@ -526,6 +602,40 @@ class DashboardServer:
                 text=csv_data,
                 headers={'Content-Disposition': 'attachment; filename=metrics.csv'}
             )
+            
+    async def get_augmentation_dashboard(self, request):
+        """Get augmentation dashboard data"""
+        try:
+            if hasattr(self.system, 'augmentation_manager') and self.system.augmentation_manager:
+                dashboard_data = self.system.augmentation_manager.get_monitoring_dashboard()
+                return web.json_response(dashboard_data)
+            else:
+                # Return empty data structure
+                return web.json_response({
+                    'summary': {
+                        'total_events': 0,
+                        'total_augmented': 0,
+                        'average_quality': 0,
+                        'average_factor': 1.0,
+                        'active_alerts': 0
+                    },
+                    'recent_alerts': [],
+                    'by_phase': {},
+                    'method_usage': {}
+                })
+        except Exception as e:
+            logger.error(f"Augmentation dashboard error: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+            
+    async def serve_augmentation_dashboard(self, request):
+        """Serve the augmentation dashboard HTML"""
+        dashboard_path = Path('augmentation_dashboard_test.html')
+        if dashboard_path.exists():
+            with open(dashboard_path, 'r') as f:
+                html = f.read()
+            return web.Response(text=html, content_type='text/html')
+        else:
+            return web.Response(text="Augmentation dashboard not found", status=404)
             
     def _convert_to_csv(self, data: Dict[str, Any]) -> str:
         """Convert data to CSV format"""

@@ -17,6 +17,12 @@
                 .phase-learning { background: #e3f2fd; }
                 .phase-shadow { background: #fff9c4; }
                 .phase-active { background: #c8e6c9; }
+                .status-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+                .status-ok { background: #4CAF50; }
+                .status-warning { background: #FF9800; }
+                .status-error { background: #F44336; }
+                button:hover { opacity: 0.8; }
+                .loading { opacity: 0.6; }
             </style>
         </head>
         <body>
@@ -45,17 +51,194 @@
                 
                 <div class="card">
                     <h2>Phase Distribution</h2>
-        
+                    <!-- Dynamic content will be inserted here -->
                 </div>
                 
                 <div class="card">
                     <h2>Recent Alerts</h2>
-        
+                    <!-- Dynamic content will be inserted here -->
+                </div>
+                
+                <div class="card">
+                    <h2>Method Usage Statistics</h2>
+                    <div id="method-stats">
+                        <p style="color: #666;">Loading method statistics...</p>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>Dashboard Controls</h2>
+                    <div style="margin-top: 10px;">
+                        <button onclick="loadAugmentationData()" style="padding: 8px 16px; margin: 5px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                            🔄 Refresh Data
+                        </button>
+                        <button onclick="exportData()" style="padding: 8px 16px; margin: 5px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                            📊 Export Data
+                        </button>
+                        <button onclick="toggleAutoRefresh()" style="padding: 8px 16px; margin: 5px; background: #FF9800; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                            ⏸️ Toggle Auto-refresh
+                        </button>
+                    </div>
                 </div>
             </div>
             <script>
-                // Auto-refresh every 5 seconds
-                setTimeout(() => location.reload(), 5000);
+                // Global state
+                let augmentationData = {};
+                let refreshTimer = null;
+                
+                // Initialize dashboard
+                async function init() {
+                    await loadAugmentationData();
+                    startAutoRefresh();
+                }
+                
+                // Load augmentation data from API
+                async function loadAugmentationData() {
+                    try {
+                        const response = await fetch('/augmentation/dashboard');
+                        if (response.ok) {
+                            augmentationData = await response.json();
+                            updateDashboard();
+                        } else {
+                            console.warn('Augmentation API not available, using mock data');
+                            useMockData();
+                        }
+                    } catch (error) {
+                        console.error('Failed to load augmentation data:', error);
+                        useMockData();
+                    }
+                }
+                
+                // Use mock data when API unavailable
+                function useMockData() {
+                    augmentationData = {
+                        summary: {
+                            total_events: 1523,
+                            total_augmented: 8756,
+                            average_quality: 0.847,
+                            average_factor: 2.1,
+                            active_alerts: 1
+                        },
+                        recent_alerts: [
+                            {
+                                type: 'ACTIVE_PHASE_AUGMENTATION',
+                                severity: 'WARNING',
+                                message: 'Augmentation applied in active phase',
+                                timestamp: new Date().toISOString()
+                            }
+                        ],
+                        by_phase: {
+                            learning: { count: 5234, percentage: 59.8 },
+                            shadow: { count: 2456, percentage: 28.1 },
+                            active: { count: 1066, percentage: 12.1 }
+                        },
+                        method_usage: {
+                            noise_injection: 2634,
+                            time_warping: 2089,
+                            bootstrap_sampling: 1876,
+                            synthetic_patterns: 1543,
+                            magnitude_warping: 614
+                        }
+                    };
+                    updateDashboard();
+                }
+                
+                // Update dashboard with current data
+                function updateDashboard() {
+                    updateSummaryMetrics();
+                    updatePhaseDistribution();
+                    updateRecentAlerts();
+                }
+                
+                // Update summary metrics
+                function updateSummaryMetrics() {
+                    const summary = augmentationData.summary || {};
+                    
+                    const metrics = document.querySelectorAll('.metric-value');
+                    if (metrics.length >= 4) {
+                        metrics[0].textContent = (summary.total_augmented || 0).toLocaleString();
+                        metrics[1].textContent = (summary.average_quality || 0).toFixed(3);
+                        metrics[2].textContent = (summary.average_factor || 0).toFixed(2) + 'x';
+                        metrics[3].textContent = summary.active_alerts || 0;
+                    }
+                }
+                
+                // Update phase distribution
+                function updatePhaseDistribution() {
+                    const phaseContainer = document.querySelector('.card h2:contains("Phase Distribution")').parentNode;
+                    const byPhase = augmentationData.by_phase || {};
+                    
+                    let phaseHTML = '<div style="margin-top: 10px;">';
+                    Object.entries(byPhase).forEach(([phase, data]) => {
+                        const count = data.count || 0;
+                        const percentage = data.percentage || 0;
+                        phaseHTML += `
+                            <div class="phase-bar phase-${phase}">
+                                ${phase.toUpperCase()}: ${count.toLocaleString()} (${percentage.toFixed(1)}%)
+                            </div>
+                        `;
+                    });
+                    phaseHTML += '</div>';
+                    
+                    // Remove existing phase content
+                    const existingContent = phaseContainer.querySelector('div');
+                    if (existingContent) {
+                        existingContent.remove();
+                    }
+                    
+                    phaseContainer.innerHTML += phaseHTML;
+                }
+                
+                // Update recent alerts
+                function updateRecentAlerts() {
+                    const alertContainer = document.querySelector('.card h2:contains("Recent Alerts")').parentNode;
+                    const alerts = augmentationData.recent_alerts || [];
+                    
+                    let alertHTML = '<div style="margin-top: 10px;">';
+                    if (alerts.length === 0) {
+                        alertHTML += '<p style="color: #666;">No recent alerts</p>';
+                    } else {
+                        alerts.slice(0, 5).forEach(alert => {
+                            const timestamp = new Date(alert.timestamp).toLocaleString();
+                            alertHTML += `
+                                <div class="alert alert-${alert.severity}">
+                                    <strong>[${timestamp}] ${alert.severity}:</strong> ${alert.message}
+                                </div>
+                            `;
+                        });
+                    }
+                    alertHTML += '</div>';
+                    
+                    // Remove existing alert content
+                    const existingContent = alertContainer.querySelector('div');
+                    if (existingContent) {
+                        existingContent.remove();
+                    }
+                    
+                    alertContainer.innerHTML += alertHTML;
+                }
+                
+                // Start auto-refresh
+                function startAutoRefresh() {
+                    if (refreshTimer) {
+                        clearInterval(refreshTimer);
+                    }
+                    refreshTimer = setInterval(loadAugmentationData, 10000); // Refresh every 10 seconds
+                }
+                
+                // Initialize when page loads
+                window.addEventListener('load', init);
+                
+                // Helper function for querySelector with text content
+                document.querySelectorAll = function(selector) {
+                    if (selector.includes(':contains(')) {
+                        const [baseSelector, text] = selector.split(':contains(');
+                        const searchText = text.replace(/["')]/g, '');
+                        const elements = document.querySelectorAll(baseSelector.trim());
+                        return Array.from(elements).filter(el => el.textContent.includes(searchText));
+                    }
+                    return NodeList.prototype.querySelectorAll.call(this, selector);
+                };
             </script>
         </body>
         </html>

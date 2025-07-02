@@ -1010,6 +1010,18 @@ class RegimeAttention(BaseAttentionModule):
                     
         return adjusted_params
         
+    async def calculate_weights(self, data: Any) -> Dict[str, float]:
+        """Calculate attention weights - wrapper for calculate_adjustments"""
+        return await self.calculate_adjustments(data)
+        
+    async def apply_weights(self, data: Any) -> Any:
+        """Apply attention weights - wrapper for apply_adjustments"""
+        if isinstance(data, dict) and 'regime' in data:
+            regime = data['regime']
+            strategy_params = data.get('strategy_params', {})
+            return await self.apply_adjustments(regime, strategy_params)
+        return data
+        
     def get_performance_by_regime(self) -> Dict[str, Dict[str, float]]:
         """Get performance metrics by regime"""
         performance = {}

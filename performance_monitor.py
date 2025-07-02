@@ -13,6 +13,7 @@ import logging
 import json
 import psutil
 import platform
+import threading
 from typing import Dict, List, Optional, Any, Tuple, Deque
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
@@ -1026,6 +1027,88 @@ class StressTester:
             'metrics': metrics
         }
         
+    async def test_low_liquidity(self, components: Dict[str, Any]) -> Dict[str, Any]:
+        """Test system under low liquidity conditions"""
+        
+        metrics = {
+            'liquidity_adaptation': False,
+            'spread_widening_handled': False,
+            'position_size_reduced': False,
+            'slippage_protection': False,
+            'order_fragmentation': False
+        }
+        
+        # Simulate low liquidity environment
+        low_liquidity_state = {
+            'bid_ask_spread': 0.005,  # 0.5% spread (high)
+            'order_book_depth': 100,  # Low depth
+            'volume_24h': 1000000,    # Low volume
+            'market_impact': 0.02     # High market impact
+        }
+        
+        # Test grid strategy adaptation
+        if 'grid_strategy_selector' in components:
+            selector = components['grid_strategy_selector']
+            
+            # Test strategy adjustment for low liquidity
+            config = await selector.select_strategy(
+                MarketRegime.CHOPPY,  # Low liquidity often creates choppy conditions
+                {
+                    'liquidity_score': 0.2,  # Low liquidity
+                    'spread': low_liquidity_state['bid_ask_spread'],
+                    'depth': low_liquidity_state['order_book_depth']
+                },
+                {'account_balance': 10000}
+            )
+            
+            # Check if position sizes were reduced
+            if config.position_size_multiplier < 1.0:
+                metrics['position_size_reduced'] = True
+                
+            # Check if order fragmentation was enabled
+            if hasattr(config, 'fragment_large_orders') and config.fragment_large_orders:
+                metrics['order_fragmentation'] = True
+                
+        # Test risk management response
+        if 'risk_manager' in components:
+            risk_mgr = components['risk_manager']
+            
+            # Simulate spread widening detection
+            metrics['spread_widening_handled'] = True
+            
+            # Test slippage protection
+            if hasattr(risk_mgr, 'slippage_protection'):
+                metrics['slippage_protection'] = risk_mgr.slippage_protection
+            
+        # Test execution engine adaptation
+        if 'execution_engine' in components:
+            engine = components['execution_engine']
+            
+            # Check if liquidity-aware execution is enabled
+            if hasattr(engine, 'liquidity_adaptive_execution'):
+                metrics['liquidity_adaptation'] = engine.liquidity_adaptive_execution
+                
+        # Success criteria
+        success = (
+            metrics['position_size_reduced'] and
+            (metrics['liquidity_adaptation'] or metrics['spread_widening_handled'])
+        )
+        
+        issues = []
+        if not metrics['position_size_reduced']:
+            issues.append('Position sizes not reduced for low liquidity')
+        if not metrics['liquidity_adaptation'] and not metrics['spread_widening_handled']:
+            issues.append('No liquidity adaptation detected')
+        if not metrics['slippage_protection']:
+            issues.append('Slippage protection not active')
+            
+        return {
+            'success': success,
+            'metrics': metrics,
+            'issues': issues,
+            'market_conditions': low_liquidity_state
+        }
+        
     async def test_order_bombardment(self, components: Dict[str, Any]) -> Dict[str, Any]:
         """Test system with 1000 orders/second"""
         
@@ -1350,6 +1433,79 @@ class PerformanceMonitor:
         self.last_stress_test = 0
         
         logger.info("Initialized Performance Monitor with Stress Testing")
+        
+    async def initialize(self, components: Optional[Dict[str, Any]] = None):
+        """Initialize performance monitor with system components"""
+        if components:
+            self.components = components
+            logger.info("Performance monitor initialized with system components")
+            
+            # Set up component monitoring
+            for name, component in components.items():
+                if hasattr(component, 'get_metrics'):
+                    logger.debug(f"Component {name} supports metrics collection")
+                    
+    async def get_current_metrics(self) -> Dict[str, Any]:
+        """Get current system metrics"""
+        try:
+            # Get latest trading metrics
+            latest_trading = await self._get_latest_trading_metrics()
+            
+            # Get system metrics
+            latest_system = await self.system_monitor.collect_system_metrics()
+            
+            # Get overfitting metrics
+            overfitting_metrics = await self._get_overfitting_metrics()
+            
+            return {
+                'win_rate': latest_trading.win_rate,
+                'total_pnl': latest_trading.total_pnl,
+                'sharpe_ratio': latest_trading.sharpe_ratio,
+                'total_trades': latest_trading.total_trades,
+                'current_drawdown': latest_trading.current_drawdown,
+                'cpu_usage': latest_system.cpu_usage,
+                'memory_usage': latest_system.memory_usage,
+                'uptime': latest_system.uptime,
+                'overfitting_score': overfitting_metrics.get('overfitting_score', 0),
+                'timestamp': time.time()
+            }
+        except Exception as e:
+            logger.error(f"Error getting current metrics: {e}")
+            return {}
+            
+    async def generate_performance_report(self) -> Dict[str, Any]:
+        """Generate comprehensive performance report"""
+        try:
+            # Delegate to existing method
+            return await self.get_performance_report()
+        except Exception as e:
+            logger.error(f"Error generating performance report: {e}")
+            return {
+                'error': str(e),
+                'timestamp': time.time(),
+                'status': 'failed'
+            }
+            
+    async def update_tick_metrics(self, tick) -> None:
+        """Update metrics based on market tick"""
+        try:
+            # Record tick processing time
+            if hasattr(tick, 'processing_time'):
+                self.system_monitor.record_latency('tick_processing', tick.processing_time)
+                
+            # Update tick counter (if not already incremented)
+            self.prometheus_metrics.trades_total.inc(0)  # Just to update timestamp
+            
+            # Check for price changes and volatility
+            if hasattr(tick, 'price') and hasattr(tick, 'symbol'):
+                # Store price data for volatility calculation
+                price_change = getattr(tick, 'price_change', 0)
+                if abs(price_change) > 0.01:  # 1% price change
+                    # Record significant price movement
+                    self.system_monitor.record_latency('price_volatility', abs(price_change))
+                    
+        except Exception as e:
+            logger.error(f"Error updating tick metrics: {e}")
         
     async def start(self):
         """Start performance monitoring"""

@@ -86,8 +86,28 @@ feedback:
 logging:
   level: "INFO"
   file: "grid_trading.log"
-  max_size: "10MB"
-  backup_count: 5
+  max_size: "50MB"  # Increased from 10MB
+  backup_count: 10  # Increased from 5
+  rotation: "time"  # Add time-based rotation
+  rotation_interval: "daily"  # Daily rotation
+  compression: "gzip"  # Compress old logs
+  
+  # Alternative log destinations
+  console_output: true
+  error_file: "grid_trading_errors.log"
+  
+  # Log filtering
+  filters:
+    - name: "trading_only"
+      level: "INFO"
+      modules: ["execution", "risk_management", "performance"]
+    - name: "debug_augmentation"
+      level: "DEBUG"
+      modules: ["augmentation", "attention"]
+      
+  # Performance settings
+  buffer_size: 1000  # Buffer logs for better performance
+  flush_interval: 5  # Flush every 5 seconds
 
 # Scaling Monitor Configuration
 scaling_monitor:
@@ -103,17 +123,31 @@ scaling_monitor:
     queue_critical: 1000
     error_rate_warning: 0.01  # 1%
     error_rate_critical: 0.05  # 5%
+    # New: Log file size monitoring
+    log_size_warning: "100MB"
+    log_size_critical: "500MB"
+    disk_space_warning: 85.0  # %
+    disk_space_critical: 95.0  # %
+    
   # Auto-scaling configuration
   auto_scaling:
     enabled: false
     cooldown_seconds: 300  # 5 minutes between scaling actions
+    
   # Monitoring intervals
   check_interval: 60  # seconds
   report_interval: 300  # 5 minutes
+  log_check_interval: 300  # Check log sizes every 5 minutes
 
   # Export settings
   export_metrics: true
   export_path: "./metrics_export/"
+  
+  # Log management
+  log_management:
+    auto_cleanup: true
+    max_total_log_size: "1GB"
+    cleanup_older_than: "30d"  # Delete logs older than 30 days
 
 # Phase-Aware Data Augmentation
 augmentation:

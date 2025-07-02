@@ -565,8 +565,12 @@
         function init() {
             updateSystemTime();
             setInterval(updateSystemTime, 1000);
-            startAutoRefresh();
-            connectWebSocket();
+            
+            // Try WebSocket first, fallback to auto-refresh
+            const ws = connectWebSocket();
+            if (!ws) {
+                startAutoRefresh();
+            }
         }
         
         // Update system time
@@ -590,19 +594,50 @@
         
         // WebSocket connection
         function connectWebSocket() {
-            // In production, connect to real WebSocket
-            // const ws = new WebSocket('ws://localhost:8080/ws');
-            // ws.onmessage = (event) => {
-            //     systemData = JSON.parse(event.data);
-            //     updateDashboard();
-            // };
-            
-            // For demo, simulate data
-            simulateData();
+            try {
+                // Connect to real WebSocket
+                const ws = new WebSocket('ws://localhost:8080/ws');
+                
+                ws.onopen = () => {
+                    console.log('WebSocket connected');
+                    addLogEntry('INFO', 'WebSocket connection established');
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        systemData = JSON.parse(event.data);
+                        updateDashboard();
+                    } catch (e) {
+                        console.error('Failed to parse WebSocket data:', e);
+                        addLogEntry('ERROR', 'WebSocket data parse error');
+                    }
+                };
+                
+                ws.onclose = () => {
+                    console.log('WebSocket disconnected, retrying...');
+                    addLogEntry('WARNING', 'WebSocket disconnected, retrying in 5s');
+                    setTimeout(connectWebSocket, 5000);
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    addLogEntry('ERROR', 'WebSocket connection error');
+                    // Fallback to simulated data
+                    simulateData();
+                };
+                
+                return ws;
+            } catch (error) {
+                console.error('Failed to create WebSocket:', error);
+                addLogEntry('ERROR', 'WebSocket creation failed, using simulated data');
+                // Fallback to demo data
+                simulateData();
+            }
         }
         
-        // Simulate data for demo
+        // Simulate data for demo (fallback)
         function simulateData() {
+            addLogEntry('INFO', 'Using simulated data - WebSocket unavailable');
             systemData = {
                 pnl: -234.56,
                 winRate: 48.5,
@@ -637,6 +672,9 @@
                 errorCount: 2,
                 queueDepth: 15
             };
+            
+            // Start auto-refresh for simulated data
+            startAutoRefresh();
         }
         
         // Update dashboard
