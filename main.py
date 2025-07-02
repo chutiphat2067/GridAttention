@@ -1,4 +1,12 @@
 # main.py
+"""
+Main orchestration for grid trading system with overfitting protection
+Integrates all components including overfitting detection and checkpointing
+
+Author: Grid Trading System
+Date: 2024
+"""
+
 import asyncio
 import logging
 import signal
@@ -8,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 
+# Core components
 from market_data_input import MarketDataInput
 from feature_engineering_pipeline import FeatureEngineeringPipeline
 from attention_learning_layer import AttentionLearningLayer
@@ -18,6 +27,12 @@ from execution_engine import ExecutionEngine
 from performance_monitor import PerformanceMonitor
 from feedback_loop import FeedbackLoop
 from scaling_monitor import create_scaling_monitor, ScalingMonitor
+
+# Overfitting protection components
+from overfitting_detector import OverfittingDetector, OverfittingMonitor, OverfittingRecovery
+from checkpoint_manager import CheckpointManager
+from data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augmentation_pipeline
+from adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
 
 # Setup logger
 logging.basicConfig(
@@ -30,13 +45,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class GridTradingSystem:
-    def __init__(self, config_path: str):
+    """Main grid trading system with comprehensive overfitting protection"""
+    
+    def __init__(self, config_path: str, overfitting_config_path: str = None):
+        # Load configurations
         self.config = self._load_config(config_path)
+        self.overfitting_config = self._load_config(
+            overfitting_config_path or 'overfitting_config.yaml'
+        )
+        
+        # System state
         self.components = {}
         self._running = False
         self._shutdown_requested = False
         self._tasks = []
+        self._in_safe_mode = False
         
         # Performance monitoring
         self.start_time = datetime.now()
@@ -44,216 +69,515 @@ class GridTradingSystem:
         self.last_heartbeat = datetime.now()
         self.scaling_monitor = None
         
-    def _load_config(self, path: str):
-        with open(path, 'r') as f:
+        # Overfitting protection
+        self.overfitting_detector = None
+        self.overfitting_monitor = None
+        self.checkpoint_manager = None
+        self.recovery_manager = None
+        
+    def _load_config(self, path: str) -> Dict[str, Any]:
+        """Load configuration from YAML file"""
+        config_path = Path(path)
+        if not config_path.exists():
+            logger.error(f"Configuration file not found: {path}")
+            raise FileNotFoundError(f"Configuration file not found: {path}")
+            
+        with open(config_path, 'r') as f:
             return yaml.safe_load(f)
             
     async def initialize(self):
         """Initialize all components with proper error handling"""
         try:
-            logger.info("Initializing GridTradingSystem...")
+            logger.info("Initializing Grid Trading System with Overfitting Protection...")
+            
+            # === Core Trading Components ===
             
             # 1. Market Data Input
             self.components['market_data'] = MarketDataInput(
                 self.config.get('market_data', {})
             )
+            logger.info("✓ Market Data Input initialized")
             
-            # 2. Feature Engineering
+            # 2. Feature Engineering with Augmentation
             self.components['features'] = FeatureEngineeringPipeline(
                 self.config.get('features', {})
             )
             
-            # 3. Attention Layer
-            self.components['attention'] = AttentionLearningLayer(
-                self.config.get('attention', {})
+            # Initialize data augmentation
+            market_augmenter, feature_augmenter = create_augmentation_pipeline(
+                self.overfitting_config.get('data_augmentation', {})
             )
+            self.components['market_augmenter'] = market_augmenter
+            self.components['feature_augmenter'] = feature_augmenter
+            logger.info("✓ Feature Engineering with Augmentation initialized")
             
-            # 4. Market Regime Detector
-            self.components['regime_detector'] = MarketRegimeDetector(
-                self.config.get('regime_detector', {})
-            )
+            # 3. Attention Layer with Regularization
+            attention_config = self.config.get('attention', {})
+            attention_config.update(self.overfitting_config.get('regularization', {}))
+            self.components['attention'] = AttentionLearningLayer(attention_config)
+            logger.info("✓ Attention Layer with Enhanced Regularization initialized")
+            
+            # 4. Market Regime Detector with Ensemble
+            regime_config = self.config.get('regime_detector', {})
+            regime_config['ensemble'] = self.overfitting_config.get('ensemble', {})
+            self.components['regime_detector'] = MarketRegimeDetector(regime_config)
+            logger.info("✓ Ensemble Market Regime Detector initialized")
             
             # 5. Grid Strategy Selector
             self.components['strategy_selector'] = GridStrategySelector(
                 self.config.get('strategy_selector', {})
             )
+            logger.info("✓ Grid Strategy Selector initialized")
             
             # 6. Risk Management System
-            self.components['risk_manager'] = RiskManagementSystem(
-                self.config.get('risk_management', {})
-            )
+            risk_config = self.config.get('risk_management', {})
+            risk_config['overfitting_aware'] = True
+            self.components['risk_manager'] = RiskManagementSystem(risk_config)
+            logger.info("✓ Risk Management System initialized")
             
             # 7. Execution Engine
             self.components['execution'] = ExecutionEngine(
                 self.config.get('execution', {})
             )
+            logger.info("✓ Execution Engine initialized")
             
             # 8. Performance Monitor
-            self.components['performance'] = PerformanceMonitor(
-                self.config.get('performance', {})
+            self.components['performance_monitor'] = PerformanceMonitor(
+                self.config.get('performance_monitor', {})
             )
+            logger.info("✓ Performance Monitor initialized")
             
             # 9. Feedback Loop
-            self.components['feedback'] = FeedbackLoop(
-                self.config.get('feedback', {})
+            self.components['feedback_loop'] = FeedbackLoop(
+                self.config.get('feedback_loop', {})
             )
-
-            # 10. Scaling monitor
-            self.scaling_monitor = await create_scaling_monitor(
-                self.components,
-                self.config.get('scaling_monitor', {})
-            )
+            logger.info("✓ Feedback Loop initialized")
             
-            logger.info("All components initialized successfully")
+            # === Overfitting Protection Components ===
+            
+            # 10. Overfitting Detector
+            overfitting_detector_config = self.overfitting_config.get('overfitting_detection', {})
+            self.overfitting_detector = OverfittingDetector(overfitting_detector_config)
+            self.components['overfitting_detector'] = self.overfitting_detector
+            logger.info("✓ Overfitting Detector initialized")
+            
+            # 11. Overfitting Monitor
+            self.overfitting_monitor = OverfittingMonitor(self.overfitting_detector)
+            
+            # Register alert handler
+            async def overfitting_alert_handler(alert):
+                await self._handle_overfitting_alert(alert)
+                
+            self.overfitting_monitor.register_alert_handler(overfitting_alert_handler)
+            logger.info("✓ Overfitting Monitor initialized")
+            
+            # 12. Checkpoint Manager
+            checkpoint_config = self.overfitting_config.get('checkpointing', {})
+            self.checkpoint_manager = CheckpointManager(
+                checkpoint_config.get('checkpoint_dir', './checkpoints')
+            )
+            self.components['checkpoint_manager'] = self.checkpoint_manager
+            logger.info("✓ Checkpoint Manager initialized")
+            
+            # 13. Recovery Manager
+            self.recovery_manager = OverfittingRecovery(self.components)
+            logger.info("✓ Recovery Manager initialized")
+            
+            # 14. Adaptive Learning Scheduler
+            if hasattr(self.components['attention'], 'optimizer'):
+                scheduler_config = self.overfitting_config.get('adaptive_learning', {})
+                self.components['learning_scheduler'] = AdaptiveLearningScheduler(
+                    self.components['attention'].optimizer,
+                    scheduler_config
+                )
+                logger.info("✓ Adaptive Learning Scheduler initialized")
+            
+            # === System Integration ===
+            
+            # Initialize Performance Monitor with all components
+            await self.components['performance_monitor'].initialize(self.components)
+            
+            # Link components
+            self.components['feedback_loop'].set_components(self.components)
+            
+            # Initialize Scaling Monitor if configured
+            if self.config.get('scaling_monitor', {}).get('enabled', False):
+                self.scaling_monitor = await create_scaling_monitor(
+                    self.config['scaling_monitor']
+                )
+                logger.info("✓ Scaling Monitor initialized")
+                
+            # Load checkpoint if exists
+            await self._load_latest_checkpoint()
+            
+            logger.info("✅ All components initialized successfully!")
             
         except Exception as e:
-            logger.error(f"Failed to initialize components: {e}")
+            logger.critical(f"Failed to initialize system: {e}")
             raise
-        
+            
     async def start(self):
-        """Start the trading system with proper lifecycle management"""
+        """Start the trading system"""
         try:
+            # Initialize components
             await self.initialize()
             
-            # Setup signal handlers for graceful shutdown
-            self._setup_signal_handlers()
+            # Setup signal handlers
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
             
+            logger.info("Starting Grid Trading System...")
             self._running = True
-            logger.info("Starting GridTradingSystem...")
             
-            # Start all components sequentially with error handling
-            await self._start_components()
+            # Start core tasks
+            self._tasks = [
+                asyncio.create_task(self._main_trading_loop()),
+                asyncio.create_task(self._monitoring_loop()),
+                asyncio.create_task(self._checkpoint_loop()),
+                asyncio.create_task(self._health_check_loop()),
+                asyncio.create_task(self._overfitting_monitoring_loop())
+            ]
             
-            # Start monitoring tasks
-            self._tasks.extend([
-                asyncio.create_task(self._heartbeat_monitor()),
-                asyncio.create_task(self._error_monitor()),
-                asyncio.create_task(self._performance_monitor())
-            ])
-            
-            # Main trading loop
-            while self._running and not self._shutdown_requested:
-                try:
-                    await self._trading_loop()
-                except Exception as e:
-                    self.error_count += 1
-                    logger.error(f"Trading loop error: {e}")
+            # Start component-specific tasks
+            for name, component in self.components.items():
+                if hasattr(component, 'start'):
+                    self._tasks.append(asyncio.create_task(component.start()))
                     
-                    # Circuit breaker: stop if too many errors
-                    if self.error_count > 10:
-                        logger.critical("Too many errors, shutting down")
-                        await self.shutdown()
-                        break
-                        
-                    await asyncio.sleep(1)
-
-            # Start scaling monitor
-            if self.scaling_monitor:
-                await self.scaling_monitor.start()
-                
-            # scaling monitor task to tasks list
-            self._tasks.append(
-                asyncio.create_task(self._scaling_report_task())
-            )
-                    
+            # Start overfitting monitor
+            await self.overfitting_monitor.start_monitoring()
+            
+            logger.info("🚀 System started successfully!")
+            
+            # Run until shutdown
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            
         except Exception as e:
-            logger.critical(f"Critical error in start(): {e}")
+            logger.critical(f"System error: {e}")
             await self.shutdown()
             raise
+            
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals"""
+        logger.info(f"Received signal {signum}")
+        self._shutdown_requested = True
+        asyncio.create_task(self.shutdown())
+        
+    async def _main_trading_loop(self):
+        """Main trading logic loop"""
+        logger.info("Starting main trading loop...")
+        
+        while self._running:
+            try:
+                # Check if in safe mode
+                if self._in_safe_mode:
+                    await asyncio.sleep(5)
+                    continue
+                    
+                # Get market data
+                market_data = await self.components['market_data'].get_latest_data()
                 
-    async def _trading_loop(self):
-        """Main trading logic"""
-        # 1. Get market data
-        tick = await self.components['market_data'].collect_tick()
+                if market_data:
+                    # Process through pipeline
+                    await self._process_market_tick(market_data)
+                    
+                # Small delay to prevent busy waiting
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in main trading loop: {e}")
+                self.error_count += 1
+                
+                # Enter safe mode if too many errors
+                if self.error_count > 10:
+                    await self._enter_safe_mode("Too many errors")
+                    
+                await asyncio.sleep(1)
+                
+    async def _process_market_tick(self, tick):
+        """Process single market tick through entire pipeline"""
+        try:
+            # 1. Feature extraction
+            features = await self.components['features'].extract_features(
+                await self.components['market_data'].get_recent_data(tick.symbol, 100)
+            )
+            
+            # 2. Apply attention
+            enhanced_features = await self.components['attention'].process_market_data(
+                features.features,
+                await self.components['market_data'].get_recent_data(tick.symbol, 100)
+            )
+            
+            # 3. Detect market regime
+            regime, confidence = await self.components['regime_detector'].detect_regime(
+                enhanced_features
+            )
+            
+            # 4. Select strategy
+            strategy = await self.components['strategy_selector'].select_strategy(
+                regime, 
+                enhanced_features
+            )
+            
+            # 5. Generate grid levels
+            grid_levels = strategy.calculate_grid_levels(tick.price)
+            
+            # 6. Risk check and execute
+            for level in grid_levels:
+                order_params = {
+                    'symbol': tick.symbol,
+                    'side': level.side,
+                    'price': level.price,
+                    'quantity': level.quantity
+                }
+                
+                # Risk check
+                risk_check = await self.components['risk_manager'].check_order_risk(order_params)
+                
+                if risk_check['approved']:
+                    # Execute order
+                    await self.components['execution'].execute_order(order_params)
+                    
+            # 7. Update performance metrics
+            await self.components['performance_monitor'].update_tick_metrics(tick)
+            
+        except Exception as e:
+            logger.error(f"Error processing market tick: {e}")
+            
+    async def _monitoring_loop(self):
+        """Performance monitoring loop"""
+        logger.info("Starting monitoring loop...")
         
-        # 2. Extract features
-        features = await self.components['features'].extract_features()
+        while self._running:
+            try:
+                # Generate performance report
+                report = await self.components['performance_monitor'].generate_performance_report()
+                
+                # Check for issues
+                if report.get('alerts'):
+                    for alert in report['alerts']:
+                        logger.warning(f"Performance alert: {alert}")
+                        
+                # Log summary
+                if report.get('summary'):
+                    summary = report['summary']
+                    logger.info(
+                        f"Performance - Trades: {summary.get('total_trades', 0)}, "
+                        f"Win Rate: {summary.get('win_rate', 0):.2%}, "
+                        f"PnL: ${summary.get('total_pnl', 0):.2f}"
+                    )
+                    
+                await asyncio.sleep(60)  # Every minute
+                
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {e}")
+                await asyncio.sleep(60)
+                
+    async def _checkpoint_loop(self):
+        """Checkpoint saving loop"""
+        logger.info("Starting checkpoint loop...")
         
-        # 3. Process through attention
-        features = await self.components['attention'].process(
-            features, regime, context
+        checkpoint_interval = self.overfitting_config.get('checkpointing', {}).get(
+            'checkpoint_interval', 3600
         )
         
-        # ... continue with trading logic
-
-    async def _start_components(self):
-        """Start all components with error handling"""
-        component_order = [
-            'market_data', 'risk_manager', 'performance', 
-            'execution', 'regime_detector', 'strategy_selector'
-        ]
-        
-        for component_name in component_order:
+        while self._running:
             try:
-                component = self.components.get(component_name)
-                if component and hasattr(component, 'start'):
-                    await component.start()
-                    logger.info(f"Started {component_name}")
-            except Exception as e:
-                logger.error(f"Failed to start {component_name}: {e}")
-                raise
+                await asyncio.sleep(checkpoint_interval)
                 
-    def _setup_signal_handlers(self):
-        """Setup signal handlers for graceful shutdown"""
-        def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, initiating shutdown...")
-            self._shutdown_requested = True
-            
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+                # Save checkpoints for key components
+                await self._save_system_checkpoint()
+                
+            except Exception as e:
+                logger.error(f"Error in checkpoint loop: {e}")
+                
+    async def _health_check_loop(self):
+        """System health check loop"""
+        logger.info("Starting health check loop...")
         
-    async def _heartbeat_monitor(self):
-        """Monitor system heartbeat"""
-        while self._running:
-            self.last_heartbeat = datetime.now()
-            await asyncio.sleep(30)  # Heartbeat every 30 seconds
-            
-    async def _error_monitor(self):
-        """Monitor system errors"""
-        while self._running:
-            if self.error_count > 0:
-                logger.warning(f"Current error count: {self.error_count}")
-            await asyncio.sleep(60)  # Check every minute
-            
-    async def _performance_monitor(self):
-        """Monitor system performance"""
-        while self._running:
-            uptime = datetime.now() - self.start_time
-            logger.info(f"System uptime: {uptime}, errors: {self.error_count}")
-            await asyncio.sleep(300)  # Report every 5 minutes
-
-    async def _scaling_report_task(self):
-        """Periodic scaling report generation"""
         while self._running:
             try:
-                # Generate scaling report every 5 minutes
+                # Update heartbeat
+                self.last_heartbeat = datetime.now()
+                
+                # Check component health
+                unhealthy_components = []
+                
+                for name, component in self.components.items():
+                    if hasattr(component, 'health_check'):
+                        health = await component.health_check()
+                        if not health.get('healthy', True):
+                            unhealthy_components.append(name)
+                            
+                # Take action if components unhealthy
+                if unhealthy_components:
+                    logger.warning(f"Unhealthy components: {unhealthy_components}")
+                    
+                    # Try to recover
+                    for component_name in unhealthy_components:
+                        await self._recover_component(component_name)
+                        
+                await asyncio.sleep(30)  # Every 30 seconds
+                
+            except Exception as e:
+                logger.error(f"Error in health check loop: {e}")
+                await asyncio.sleep(30)
+                
+    async def _overfitting_monitoring_loop(self):
+        """Dedicated overfitting monitoring loop"""
+        logger.info("Starting overfitting monitoring loop...")
+        
+        while self._running:
+            try:
+                # Get current overfitting metrics
+                detection = await self.overfitting_detector.detect_overfitting()
+                
+                # Update components with overfitting status
+                if detection['is_overfitting']:
+                    # Update risk manager
+                    self.components['risk_manager'].overfitting_detected = True
+                    self.components['risk_manager'].overfitting_severity = detection['severity']
+                    
+                    # Update feedback loop
+                    self.components['feedback_loop'].overfitting_factor = detection['metrics'].get(
+                        'performance_gap', 0
+                    )
+                    
+                # Log status
+                if detection['is_overfitting']:
+                    logger.warning(
+                        f"Overfitting detected - Severity: {detection['severity']}, "
+                        f"Types: {detection['overfitting_types']}"
+                    )
+                    
+                await asyncio.sleep(300)  # Every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"Error in overfitting monitoring: {e}")
                 await asyncio.sleep(300)
                 
-                if self.scaling_monitor:
-                    report = await self.scaling_monitor.get_scaling_report()
+    async def _handle_overfitting_alert(self, alert: Dict[str, Any]):
+        """Handle overfitting alerts"""
+        logger.warning(f"Overfitting alert received: {alert['message']}")
+        
+        severity = alert.get('severity', 'MEDIUM')
+        
+        # Take action based on severity
+        if severity in ['CRITICAL', 'HIGH']:
+            # Save checkpoint before recovery
+            await self._save_system_checkpoint(reason="Pre-recovery checkpoint")
+            
+            # Execute recovery
+            detection = alert.get('details', {})
+            recovery_result = await self.recovery_manager.recover_from_overfitting(
+                detection,
+                severity
+            )
+            
+            if recovery_result['success']:
+                logger.info(f"Recovery successful: {recovery_result['actions_taken']}")
+            else:
+                logger.error(f"Recovery failed: {recovery_result.get('error')}")
+                await self._enter_safe_mode("Recovery failed")
+                
+    async def _save_system_checkpoint(self, reason: str = "Scheduled"):
+        """Save checkpoint for all key components"""
+        try:
+            logger.info(f"Saving system checkpoint: {reason}")
+            
+            # Get current performance metrics
+            performance_metrics = await self.components['performance_monitor'].get_current_metrics()
+            
+            # Save attention layer checkpoint
+            if 'attention' in self.components:
+                checkpoint_id = await self.checkpoint_manager.save_checkpoint(
+                    model_name='attention_layer',
+                    component=self.components['attention'],
+                    performance_metrics=performance_metrics
+                )
+                logger.info(f"Saved attention layer checkpoint: {checkpoint_id}")
+                
+            # Save regime detector checkpoint
+            if 'regime_detector' in self.components:
+                checkpoint_id = await self.checkpoint_manager.save_checkpoint(
+                    model_name='regime_detector',
+                    component=self.components['regime_detector'],
+                    performance_metrics=performance_metrics
+                )
+                logger.info(f"Saved regime detector checkpoint: {checkpoint_id}")
+                
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+            
+    async def _load_latest_checkpoint(self):
+        """Load latest checkpoint if available"""
+        try:
+            # Load attention layer
+            if 'attention' in self.components:
+                success = await self.checkpoint_manager.load_checkpoint(
+                    model_name='attention_layer',
+                    component=self.components['attention']
+                )
+                if success:
+                    logger.info("Loaded attention layer from checkpoint")
                     
-                    # Log scaling score
-                    logger.info(f"Scaling Score: {report['scaling_score']:.1f}/100")
+            # Load regime detector
+            if 'regime_detector' in self.components:
+                success = await self.checkpoint_manager.load_checkpoint(
+                    model_name='regime_detector',
+                    component=self.components['regime_detector']
+                )
+                if success:
+                    logger.info("Loaded regime detector from checkpoint")
                     
-                    # Log any immediate issues
-                    if report['immediate_action_required']:
-                        logger.critical("IMMEDIATE SCALING ACTION REQUIRED")
-                        for issue in report.get('immediate_issues', []):
-                            logger.critical(f"  - {issue}")
-                            
-                    # Save report
-                    report_path = f"scaling_report_{int(time.time())}.json"
-                    with open(report_path, 'w') as f:
-                        json.dump(report, f, indent=2)
-                        
-            except Exception as e:
-                logger.error(f"Error generating scaling report: {e}")
+        except Exception as e:
+            logger.warning(f"Could not load checkpoint: {e}")
+            
+    async def _enter_safe_mode(self, reason: str):
+        """Enter safe mode to protect capital"""
+        logger.warning(f"Entering SAFE MODE: {reason}")
+        self._in_safe_mode = True
+        
+        # Reduce all risks
+        if 'risk_manager' in self.components:
+            self.components['risk_manager'].risk_reduction_mode = True
+            
+        # Close all positions gradually
+        if 'execution' in self.components:
+            await self.components['execution'].close_all_positions(gradual=True)
+            
+        # Notify
+        logger.critical(f"SAFE MODE ACTIVATED: {reason}")
+        
+    async def _recover_component(self, component_name: str):
+        """Try to recover a failed component"""
+        logger.info(f"Attempting to recover component: {component_name}")
+        
+        try:
+            component = self.components.get(component_name)
+            
+            if component and hasattr(component, 'recover'):
+                await component.recover()
+                logger.info(f"Component {component_name} recovered")
+            else:
+                # Try to reinitialize
+                logger.warning(f"Reinitializing component: {component_name}")
+                # Component-specific reinitialization logic here
+                
+        except Exception as e:
+            logger.error(f"Failed to recover {component_name}: {e}")
             
     async def shutdown(self):
         """Graceful shutdown"""
         logger.info("Initiating graceful shutdown...")
         self._running = False
         
+        # Save final checkpoint
+        await self._save_system_checkpoint(reason="Shutdown checkpoint")
+        
+        # Stop overfitting monitor
+        if self.overfitting_monitor:
+            await self.overfitting_monitor.stop_monitoring()
+            
         # Cancel all tasks
         for task in self._tasks:
             task.cancel()
@@ -261,31 +585,80 @@ class GridTradingSystem:
         # Stop all components
         for name, component in self.components.items():
             try:
-                # Stop scaling monitor
-                if self.scaling_monitor:
-                    await self.scaling_monitor.stop()
-                    logger.info("Stopped scaling monitor")
-
                 if hasattr(component, 'stop'):
                     await component.stop()
                     logger.info(f"Stopped {name}")
             except Exception as e:
                 logger.error(f"Error stopping {name}: {e}")
                 
+        # Stop scaling monitor
+        if self.scaling_monitor:
+            await self.scaling_monitor.stop()
+            
         # Wait for tasks to complete
         await asyncio.gather(*self._tasks, return_exceptions=True)
         
-        logger.info("Shutdown complete")
+        # Generate final report
+        try:
+            final_report = await self.components['performance_monitor'].generate_performance_report()
+            
+            # Save to file
+            report_path = f"final_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(report_path, 'w') as f:
+                import json
+                json.dump(final_report, f, indent=2, default=str)
+                
+            logger.info(f"Final report saved to {report_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to generate final report: {e}")
+            
+        logger.info("✅ Shutdown complete")
 
 
-if __name__ == "__main__":
-    config_path = "config.yaml"  # Fixed path
+def main():
+    """Main entry point"""
+    import argparse
     
+    parser = argparse.ArgumentParser(description='Grid Trading System')
+    parser.add_argument(
+        '--config',
+        default='config.yaml',
+        help='Path to main configuration file'
+    )
+    parser.add_argument(
+        '--overfitting-config',
+        default='overfitting_config.yaml',
+        help='Path to overfitting configuration file'
+    )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug logging'
+    )
+    
+    args = parser.parse_args()
+    
+    # Set debug logging if requested
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        
     try:
-        system = GridTradingSystem(config_path)
+        # Create system instance
+        system = GridTradingSystem(
+            config_path=args.config,
+            overfitting_config_path=args.overfitting_config
+        )
+        
+        # Run system
         asyncio.run(system.start())
+        
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     except Exception as e:
-        logger.critical(f"System failed: {e}")
+        logger.critical(f"System failed: {e}", exc_info=True)
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
