@@ -48,9 +48,9 @@ from augmentation_monitor import AugmentationDashboard
 
 # Dashboard integration
 from dashboard_integration import integrate_dashboard_optimized
-from dashboard_optimization import optimize_dashboard_performance
+from dashboard_optimization import optimize_dashboard_performance, OptimizedDashboardCollector
 from unified_monitor import replace_monitoring_loops
-from memory_manager import patch_system_buffers
+from memory_manager import patch_system_buffers, memory_manager, BoundedBuffer
 
 # Setup logger
 logging.basicConfig(
@@ -188,13 +188,24 @@ class GridTradingSystem:
                 
             logger.info("✓ Phase-Aware Data Augmentation with Monitoring initialized")
             
+            # === Memory Management ===
+            
+            # Patch all buffers with size limits
+            patch_system_buffers(self)
+            logger.info("✓ Memory management patches applied")
+            
             # === Dashboard Integration ===
             
             if self.dashboard_enabled:
                 # Use optimized dashboard with reduced update frequency
                 update_interval = self.config.get('dashboard', {}).get('update_interval', 10)
+                
+                # Initialize optimized dashboard collector
+                self.optimized_dashboard_collector = OptimizedDashboardCollector(self)
+                
                 self.dashboard_server = integrate_dashboard_optimized(self, update_interval)
                 logger.info(f"✓ Optimized dashboard server initialized (update interval: {update_interval}s)")
+                logger.info("✓ Optimized dashboard collector integrated")
             
             # === System Integration ===
             
