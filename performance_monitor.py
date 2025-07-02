@@ -1607,17 +1607,15 @@ class PerformanceMonitor:
         self._running = False
         
         # Cancel tasks
-        for task in [self._monitoring_task, self._alert_task, self._dashboard_task]:
-            if task:
+        tasks_to_wait = []
+        for task in [self._monitoring_task, self._alert_task, self._dashboard_task, self._stress_test_task]:
+            if task and not task.done():
                 task.cancel()
+                tasks_to_wait.append(task)
                 
-        # Wait for tasks
-        await asyncio.gather(
-            self._monitoring_task,
-            self._alert_task,
-            self._dashboard_task,
-            return_exceptions=True
-        )
+        # Wait for completion
+        if tasks_to_wait:
+            await asyncio.gather(*tasks_to_wait, return_exceptions=True)
         
         # Stop dashboard
         await self.dashboard_server.stop()

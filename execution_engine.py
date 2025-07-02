@@ -1551,6 +1551,15 @@ class ExecutionEngine:
     def load_state(self, state: Dict[str, Any]) -> None:
         """Load component state from checkpoint"""
         pass
+    
+    async def emergency_stop(self) -> None:
+        """Emergency stop - cancel all orders and stop workers"""
+        logger.critical("EMERGENCY STOP - Cancelling all orders")
+        await self.cancel_all_orders()
+        
+        # Stop workers
+        self._running = False
+        logger.info("Emergency stop completed")
 
 
 class ExecutionStrategy:

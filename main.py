@@ -34,6 +34,7 @@ from checkpoint_manager import CheckpointManager
 from data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augmentation_pipeline
 from adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
 from essential_fixes import apply_essential_fixes, KillSwitch
+from system_coordinator import SystemCoordinator
 
 # Phase-aware augmentation components
 from phase_aware_data_augmenter import (
@@ -70,6 +71,7 @@ class GridTradingSystem:
         
         # System state
         self.components = {}
+        self.coordinator = None
         self._running = False
         self._shutdown_requested = False
         self._tasks = []
@@ -109,111 +111,47 @@ class GridTradingSystem:
             return yaml.safe_load(f)
             
     async def initialize(self):
-        """Initialize all components with proper error handling"""
+        """Initialize with SystemCoordinator"""
         try:
-            logger.info("Initializing Grid Trading System with Overfitting Protection...")
+            logger.info("Initializing Grid Trading System with SystemCoordinator...")
             
-            # === Core Trading Components ===
+            # Create coordinator with merged configuration
+            coordinator_config = {
+                'attention_learning_layer': {
+                    **self.config.get('attention', {}),
+                    **self.overfitting_config.get('regularization', {})
+                },
+                'market_regime_detector': {
+                    **self.config.get('regime_detector', {}),
+                    'ensemble': self.overfitting_config.get('ensemble', {})
+                },
+                'grid_strategy_selector': self.config.get('strategy_selector', {}),
+                'risk_management_system': {
+                    **self.config.get('risk_management', {}),
+                    'overfitting_aware': True
+                },
+                'execution_engine': self.config.get('execution', {}),
+                'performance_monitor': {
+                    **self.config.get('performance', {}),
+                    'overfitting_config': self.overfitting_config
+                },
+                'overfitting_detector': self.overfitting_config.get('detector', {}),
+                'feedback_loop': self.config.get('feedback', {})
+            }
             
-            # 1. Market Data Input
-            self.components['market_data'] = MarketDataInput(
-                self.config.get('market_data', {})
-            )
-            logger.info("✓ Market Data Input initialized")
+            # Initialize coordinator
+            self.coordinator = SystemCoordinator(coordinator_config)
+            await self.coordinator.initialize_components()
+            self.components = self.coordinator.components
             
-            # 2. Feature Engineering with Augmentation
-            self.components['features'] = FeatureEngineeringPipeline(
-                self.config.get('features', {})
-            )
+            logger.info("✓ System coordinator initialized")
             
-            # Initialize data augmentation
-            market_augmenter, feature_augmenter = create_augmentation_pipeline(
-                self.overfitting_config.get('data_augmentation', {})
-            )
-            self.components['market_augmenter'] = market_augmenter
-            self.components['feature_augmenter'] = feature_augmenter
-            logger.info("✓ Feature Engineering with Augmentation initialized")
+            # Add legacy components for compatibility
+            await self._initialize_legacy_components()
             
-            # 3. Attention Layer with Regularization
-            attention_config = self.config.get('attention', {})
-            attention_config.update(self.overfitting_config.get('regularization', {}))
-            self.components['attention'] = AttentionLearningLayer(attention_config)
-            logger.info("✓ Attention Layer with Enhanced Regularization initialized")
-            
-            # 4. Market Regime Detector with Ensemble
-            regime_config = self.config.get('regime_detector', {})
-            regime_config['ensemble'] = self.overfitting_config.get('ensemble', {})
-            self.components['regime_detector'] = MarketRegimeDetector(regime_config)
-            logger.info("✓ Ensemble Market Regime Detector initialized")
-            
-            # 5. Grid Strategy Selector
-            self.components['strategy_selector'] = GridStrategySelector(
-                self.config.get('strategy_selector', {})
-            )
-            logger.info("✓ Grid Strategy Selector initialized")
-            
-            # 6. Risk Management System
-            risk_config = self.config.get('risk_management', {})
-            risk_config['overfitting_aware'] = True
-            self.components['risk_manager'] = RiskManagementSystem(risk_config)
-            logger.info("✓ Risk Management System initialized")
-            
-            # 7. Execution Engine
-            self.components['execution'] = ExecutionEngine(
-                self.config.get('execution', {})
-            )
-            logger.info("✓ Execution Engine initialized")
-            
-            # 8. Performance Monitor
-            self.components['performance_monitor'] = PerformanceMonitor(
-                self.config.get('performance_monitor', {})
-            )
-            logger.info("✓ Performance Monitor initialized")
-            
-            # 9. Feedback Loop
-            self.components['feedback_loop'] = FeedbackLoop(
-                self.config.get('feedback_loop', {})
-            )
-            logger.info("✓ Feedback Loop initialized")
-            
-            # === Overfitting Protection Components ===
-            
-            # 10. Overfitting Detector
-            overfitting_detector_config = self.overfitting_config.get('overfitting_detection', {})
-            self.overfitting_detector = OverfittingDetector(overfitting_detector_config)
-            self.components['overfitting_detector'] = self.overfitting_detector
-            logger.info("✓ Overfitting Detector initialized")
-            
-            # 11. Overfitting Monitor
-            self.overfitting_monitor = OverfittingMonitor(self.overfitting_detector)
-            
-            # Register alert handler
-            async def overfitting_alert_handler(alert):
-                await self._handle_overfitting_alert(alert)
-                
-            self.overfitting_monitor.register_alert_handler(overfitting_alert_handler)
-            logger.info("✓ Overfitting Monitor initialized")
-            
-            # 12. Checkpoint Manager
-            checkpoint_config = self.overfitting_config.get('checkpointing', {})
-            self.checkpoint_manager = CheckpointManager(
-                checkpoint_config.get('checkpoint_dir', './checkpoints')
-            )
-            self.components['checkpoint_manager'] = self.checkpoint_manager
-            logger.info("✓ Checkpoint Manager initialized")
-            
-            # 13. Recovery Manager
-            self.recovery_manager = OverfittingRecovery(self.components)
-            logger.info("✓ Recovery Manager initialized")
-            
-            # 14. Adaptive Learning Scheduler
-            if hasattr(self.components['attention'], 'optimizer'):
-                scheduler_config = self.overfitting_config.get('adaptive_learning', {})
-                self.components['learning_scheduler'] = AdaptiveLearningScheduler(
-                    self.components['attention'].optimizer,
-                    scheduler_config
-                )
-                logger.info("✓ Adaptive Learning Scheduler initialized")
+            # Start coordinator
+            await self.coordinator.start()
+            logger.info("✓ System coordinator started")
             
             # === Phase-Aware Augmentation Setup ===
             
@@ -267,19 +205,54 @@ class GridTradingSystem:
             
             logger.info("✅ All components initialized successfully!")
             
-            # Apply essential fixes after initialization
-            logger.info("Applying essential fixes...")
-            self.components = apply_essential_fixes(self.components)
-            logger.info("✓ Essential fixes applied")
-            
-            # Add kill switch to risk manager if not present
-            if 'risk_manager' in self.components and not hasattr(self.components['risk_manager'], 'kill_switch'):
-                self.components['risk_manager'].kill_switch = KillSwitch()
-                logger.info("✓ Kill switch added to risk manager")
+            logger.info("✅ All components initialized with integration!")
             
         except Exception as e:
             logger.critical(f"Failed to initialize system: {e}")
             raise
+    
+    async def _initialize_legacy_components(self):
+        """Initialize legacy components for backward compatibility"""
+        try:
+            # Map coordinator components to legacy names
+            if 'attention_learning_layer' in self.components:
+                self.components['attention'] = self.components['attention_learning_layer']
+            if 'market_regime_detector' in self.components:
+                self.components['regime_detector'] = self.components['market_regime_detector']
+            if 'grid_strategy_selector' in self.components:
+                self.components['strategy_selector'] = self.components['grid_strategy_selector']
+            if 'risk_management_system' in self.components:
+                self.components['risk_manager'] = self.components['risk_management_system']
+            if 'execution_engine' in self.components:
+                self.components['execution'] = self.components['execution_engine']
+                
+            # Initialize additional legacy components
+            # Overfitting Monitor
+            self.overfitting_detector = self.components.get('overfitting_detector')
+            if self.overfitting_detector:
+                self.overfitting_monitor = OverfittingMonitor(self.overfitting_detector)
+                
+                # Register alert handler
+                async def overfitting_alert_handler(alert):
+                    await self._handle_overfitting_alert(alert)
+                    
+                self.overfitting_monitor.register_alert_handler(overfitting_alert_handler)
+                logger.info("✓ Overfitting Monitor initialized")
+            
+            # Checkpoint Manager
+            checkpoint_config = self.overfitting_config.get('checkpointing', {})
+            self.checkpoint_manager = CheckpointManager(
+                checkpoint_config.get('checkpoint_dir', './checkpoints')
+            )
+            self.components['checkpoint_manager'] = self.checkpoint_manager
+            logger.info("✓ Checkpoint Manager initialized")
+            
+            # Recovery Manager
+            self.recovery_manager = OverfittingRecovery(self.components)
+            logger.info("✓ Recovery Manager initialized")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize legacy components: {e}")
             
     async def start(self):
         """Start the trading system"""

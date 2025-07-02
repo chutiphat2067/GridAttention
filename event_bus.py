@@ -65,3 +65,5 @@ class Events:
     KILL_SWITCH_ACTIVATED = "kill_switch_activated"
     COMPONENT_ERROR = "component_error"
     COMPONENT_RECOVERED = "component_recovered"
+    PERFORMANCE_UPDATE = "performance_update"
+    FEEDBACK_SIGNAL = "feedback_signal"

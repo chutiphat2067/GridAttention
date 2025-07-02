@@ -1353,16 +1353,15 @@ class FeedbackLoop:
         self._running = False
         
         # Cancel tasks
+        tasks_to_wait = []
         for task in [self._feedback_task, self._optimization_task]:
-            if task:
+            if task and not task.done():
                 task.cancel()
+                tasks_to_wait.append(task)
                 
         # Wait for completion
-        await asyncio.gather(
-            self._feedback_task,
-            self._optimization_task,
-            return_exceptions=True
-        )
+        if tasks_to_wait:
+            await asyncio.gather(*tasks_to_wait, return_exceptions=True)
         
         logger.info("Stopped feedback loop")
         

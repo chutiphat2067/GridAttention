@@ -45,8 +45,29 @@ class SystemCoordinator:
         # Apply fixes
         self.components = apply_essential_fixes(self.components)
         
+        # Setup integration
+        await self._setup_integration()
+        
         # Subscribe to events
         await self._setup_event_handlers()
+        
+    async def _setup_integration(self):
+        """Setup component integration using IntegrationManager"""
+        from integration_manager import integration_manager
+        
+        # Register all components with integration manager
+        for name, component in self.components.items():
+            await integration_manager.register_component(name, component)
+            
+        # Setup feedback loops
+        await integration_manager.setup_feedback_loops()
+        
+        # Setup kill switch integration
+        await integration_manager.setup_kill_switch_integration()
+        
+        # Verify integration
+        status = await integration_manager.verify_integration()
+        logger.info(f"Integration status: {status}")
         
     async def _setup_event_handlers(self):
         """Setup event handlers for coordination"""
