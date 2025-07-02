@@ -231,14 +231,27 @@ class ExchangeManager:
             
         for exchange_name, config in self.exchange_configs.items():
             try:
+                # Validate config is a dictionary
+                if not isinstance(config, dict):
+                    logger.error(f"Invalid config for {exchange_name}: expected dict, got {type(config)}")
+                    continue
+                
+                # Use default exchange class if not specified
+                exchange_class_name = config.get('class', 'binance')
+                
                 # Initialize exchange instance
-                exchange_class = getattr(ccxt, config['class'])
+                exchange_class = getattr(ccxt, exchange_class_name, None)
+                if not exchange_class:
+                    logger.error(f"Exchange class '{exchange_class_name}' not found")
+                    continue
+                    
                 exchange = exchange_class({
-                    'apiKey': config.get('api_key'),
-                    'secret': config.get('secret'),
+                    'apiKey': config.get('api_key', ''),
+                    'secret': config.get('secret', ''),
                     'enableRateLimit': True,
                     'rateLimit': config.get('rate_limit', 50),
-                    'options': config.get('options', {})
+                    'options': config.get('options', {}),
+                    'sandbox': config.get('sandbox', True)  # Default to sandbox for safety
                 })
                 
                 # Load markets
@@ -901,7 +914,22 @@ class ExecutionEngine:
     High-performance order execution with fee optimization
     """
     
-    def __init__(self, exchange_configs: Dict[str, Dict[str, Any]]):
+    def __init__(self, config: Dict[str, Any]):
+        # Extract exchange configs or create default
+        if isinstance(config, dict) and 'exchanges' in config:
+            exchange_configs = config['exchanges']
+        else:
+            # Create default exchange config for testing
+            exchange_configs = {
+                'default': {
+                    'class': 'binance',
+                    'api_key': '',
+                    'secret': '',
+                    'sandbox': True,
+                    'rate_limit': 50
+                }
+            }
+        
         self.exchange_manager = ExchangeManager(exchange_configs)
         self.order_manager = OrderManager()
         self.order_batcher = OrderBatcher()

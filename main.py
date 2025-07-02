@@ -48,6 +48,9 @@ from augmentation_monitor import AugmentationDashboard
 
 # Dashboard integration
 from dashboard_integration import integrate_dashboard_optimized
+from dashboard_optimization import optimize_dashboard_performance
+from unified_monitor import replace_monitoring_loops
+from memory_manager import patch_system_buffers
 
 # Setup logger
 logging.basicConfig(
@@ -213,6 +216,17 @@ class GridTradingSystem:
             
             logger.info("✅ All components initialized successfully!")
             
+            # === System Optimizations ===
+            
+            # Enable memory management
+            patch_system_buffers(self)
+            logger.info("✓ Memory management enabled")
+            
+            # Optimize dashboard performance
+            if self.dashboard_enabled:
+                optimize_dashboard_performance(self, cache_ttl=self.config.get('dashboard', {}).get('cache_ttl', 15))
+                logger.info("✓ Dashboard optimization enabled")
+            
             logger.info("✅ All components initialized with integration!")
             
         except Exception as e:
@@ -322,15 +336,28 @@ class GridTradingSystem:
             # Optimize memory after initialization
             await self.optimize_memory()
             
-            # Start core tasks
-            self._tasks = [
-                asyncio.create_task(self._main_trading_loop()),
-                asyncio.create_task(self._monitoring_loop()),
-                asyncio.create_task(self._checkpoint_loop()),
-                asyncio.create_task(self._health_check_loop()),
-                asyncio.create_task(self._overfitting_monitoring_loop()),
-                asyncio.create_task(self._augmentation_monitoring_loop())
-            ]
+            # Check if using unified monitoring
+            use_unified = self.config.get('monitoring', {}).get('unified_monitor', {}).get('enabled', True)
+            
+            if use_unified:
+                # Use unified monitoring system
+                self.unified_monitor = replace_monitoring_loops(self)
+                self._tasks = [
+                    asyncio.create_task(self._main_trading_loop()),
+                    asyncio.create_task(self.unified_monitor.start())
+                ]
+                logger.info("✓ Using unified monitoring system")
+            else:
+                # Use traditional multiple monitoring loops
+                self._tasks = [
+                    asyncio.create_task(self._main_trading_loop()),
+                    asyncio.create_task(self._monitoring_loop()),
+                    asyncio.create_task(self._checkpoint_loop()),
+                    asyncio.create_task(self._health_check_loop()),
+                    asyncio.create_task(self._overfitting_monitoring_loop()),
+                    asyncio.create_task(self._augmentation_monitoring_loop())
+                ]
+                logger.info("✓ Using traditional monitoring loops")
             
             # Start component-specific tasks
             for name, component in self.components.items():
