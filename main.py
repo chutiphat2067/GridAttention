@@ -43,6 +43,9 @@ from phase_aware_data_augmenter import (
 )
 from augmentation_monitor import AugmentationDashboard
 
+# Dashboard integration
+from dashboard_integration import integrate_dashboard
+
 # Setup logger
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +93,10 @@ class GridTradingSystem:
         self.augmentation_manager = None
         self.augmentation_dashboard = None
         self.training_mode = self.config.get('augmentation', {}).get('training_mode_default', True)
+        
+        # Dashboard integration
+        self.dashboard_enabled = True
+        self.dashboard_server = None
         
     def _load_config(self, path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -233,6 +240,12 @@ class GridTradingSystem:
                 )
                 
             logger.info("✓ Phase-Aware Data Augmentation with Monitoring initialized")
+            
+            # === Dashboard Integration ===
+            
+            if self.dashboard_enabled:
+                self.dashboard_server = integrate_dashboard(self)
+                logger.info("✓ Dashboard server initialized")
             
             # === System Integration ===
             
@@ -818,6 +831,11 @@ def main():
         action='store_true',
         help='Production mode - no augmentation'
     )
+    parser.add_argument(
+        '--no-dashboard',
+        action='store_true',
+        help='Disable dashboard server'
+    )
     
     args = parser.parse_args()
     
@@ -837,7 +855,12 @@ def main():
         if args.training_mode:
             system.training_mode = True
             
+        # Set dashboard mode
+        if args.no_dashboard:
+            system.dashboard_enabled = False
+            
         logger.info(f"Starting in {'TRAINING' if system.training_mode else 'PRODUCTION'} mode")
+        logger.info(f"Dashboard: {'ENABLED' if system.dashboard_enabled else 'DISABLED'}")
         
         # Run system
         asyncio.run(system.start())
