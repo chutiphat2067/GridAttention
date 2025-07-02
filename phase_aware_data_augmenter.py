@@ -13,6 +13,7 @@ import numpy as np
 from attention_learning_layer import AttentionPhase, AttentionLearningLayer
 from data_augmentation import MarketDataAugmenter, FeatureAugmenter, AugmentationConfig
 from market_data_input import MarketTick
+from augmentation_monitor import AugmentationMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +331,7 @@ def create_phase_aware_augmentation_config() -> Dict[str, Any]:
 
 # Integration with main.py
 class AugmentationManager:
-    """Manager to handle augmentation in main trading loop"""
+    """Manager to handle augmentation in main trading loop with monitoring"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -344,8 +345,17 @@ class AugmentationManager:
             }
         }
         
+        # Initialize monitor
+        self.monitor = AugmentationMonitor(
+            window_size=config.get('monitoring', {}).get('window_size', 1000)
+        )
+        
+        # Start monitoring task if enabled
+        if config.get('monitoring', {}).get('enabled', True):
+            self.monitoring_task = None
+        
     async def initialize(self, attention_layer: AttentionLearningLayer):
-        """Initialize augmentation pipeline"""
+        """Initialize augmentation pipeline with monitoring"""
         augmenter = PhaseAwareDataAugmenter()
         scheduler = AugmentationScheduler()
         
@@ -355,7 +365,14 @@ class AugmentationManager:
             scheduler
         )
         
-        logger.info("Augmentation manager initialized with phase-aware configuration")
+        # Start monitoring loop
+        if self.config.get('monitoring', {}).get('enabled', True):
+            interval = self.config.get('monitoring', {}).get('log_interval', 300)
+            self.monitoring_task = asyncio.create_task(
+                self.monitor.start_monitoring_loop(interval)
+            )
+        
+        logger.info("Augmentation manager initialized with monitoring")
         
     async def process_tick(
         self,
@@ -364,17 +381,31 @@ class AugmentationManager:
         regime: str,
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Process single tick with appropriate augmentation"""
+        """Process single tick with appropriate augmentation and monitoring"""
         
         if not self.pipeline:
             raise RuntimeError("Augmentation pipeline not initialized")
             
+        # Get performance metrics from context
+        performance_metrics = context.get('performance', {
+            'win_rate': 0.5,
+            'sharpe_ratio': 0.0
+        })
+        
         # Process with augmentation
         result = await self.pipeline.process_data_with_augmentation(
             [tick],  # Single tick as list
             features,
             regime,
             context
+        )
+        
+        # Update monitor
+        current_phase = self.pipeline.attention.phase.value
+        await self.monitor.update(
+            result,
+            performance_metrics,
+            current_phase
         )
         
         # Update statistics
@@ -392,6 +423,16 @@ class AugmentationManager:
             'current_phase': self.pipeline.attention.phase.value if self.pipeline else None,
             'learning_progress': self.pipeline.attention.get_learning_progress() if self.pipeline else 0
         }
+        
+    def get_monitoring_dashboard(self) -> Dict[str, Any]:
+        """Get monitoring dashboard data"""
+        return self.monitor.get_dashboard_data()
+        
+    async def stop(self):
+        """Stop monitoring tasks"""
+        if self.monitoring_task:
+            self.monitoring_task.cancel()
+            await asyncio.gather(self.monitoring_task, return_exceptions=True)
 
 
 # Example usage

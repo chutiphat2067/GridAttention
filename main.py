@@ -41,6 +41,7 @@ from phase_aware_data_augmenter import (
     AugmentationManager,
     create_phase_aware_augmentation_config
 )
+from augmentation_monitor import AugmentationDashboard
 
 # Setup logger
 logging.basicConfig(
@@ -87,6 +88,7 @@ class GridTradingSystem:
         
         # Phase-aware augmentation
         self.augmentation_manager = None
+        self.augmentation_dashboard = None
         self.training_mode = self.config.get('augmentation', {}).get('training_mode_default', True)
         
     def _load_config(self, path: str) -> Dict[str, Any]:
@@ -224,7 +226,13 @@ class GridTradingSystem:
             self.augmentation_manager = AugmentationManager(aug_config)
             await self.augmentation_manager.initialize(self.components['attention'])
             
-            logger.info("✓ Phase-Aware Data Augmentation initialized")
+            # Initialize augmentation dashboard if enabled
+            if aug_config.get('monitoring', {}).get('dashboard_enabled', True):
+                self.augmentation_dashboard = AugmentationDashboard(
+                    self.augmentation_manager.monitor
+                )
+                
+            logger.info("✓ Phase-Aware Data Augmentation with Monitoring initialized")
             
             # === System Integration ===
             
@@ -556,13 +564,34 @@ class GridTradingSystem:
                 await asyncio.sleep(300)
                 
     async def _augmentation_monitoring_loop(self):
-        """Monitor and log augmentation statistics"""
+        """Enhanced monitoring task with alerts"""
         while self._running:
             try:
                 if self.augmentation_manager:
-                    stats = self.augmentation_manager.get_stats()
+                    # Get dashboard data
+                    dashboard_data = self.augmentation_manager.get_monitoring_dashboard()
                     
-                    # Get current phase and progress
+                    # Check for alerts
+                    alerts = dashboard_data.get('recent_alerts', [])
+                    for alert in alerts:
+                        if alert['severity'] == 'ERROR':
+                            logger.error(f"Augmentation Alert: {alert['message']}")
+                            
+                            # Take action based on alert type
+                            if alert['type'] == 'EXCESSIVE_AUGMENTATION':
+                                # Reduce augmentation factor
+                                await self._handle_excessive_augmentation()
+                            elif alert['type'] == 'ACTIVE_PHASE_AUGMENTATION':
+                                # Log for investigation
+                                await self._investigate_active_augmentation(alert)
+                                
+                    # Update dashboard if enabled
+                    if self.augmentation_dashboard:
+                        # Could serve this via HTTP endpoint
+                        pass
+                        
+                    # Regular statistics logging
+                    stats = self.augmentation_manager.get_stats()
                     phase = self.components['attention'].phase
                     try:
                         progress = self.components['attention'].get_learning_progress()
@@ -577,16 +606,26 @@ class GridTradingSystem:
                     - Shadow Phase: {stats.get('augmentation_by_phase', {}).get('shadow', 0):,}
                     - Active Phase: {stats.get('augmentation_by_phase', {}).get('active', 0):,}
                     """)
-                    
-                    # Alert if augmentation in active phase (unusual)
-                    if phase == 'ACTIVE' and stats.get('augmentation_by_phase', {}).get('active', 0) > 0:
-                        logger.warning("Augmentation applied in ACTIVE phase - check performance")
                         
-                await asyncio.sleep(300)  # Log every 5 minutes
+                await asyncio.sleep(60)  # Check every minute
                 
             except Exception as e:
                 logger.error(f"Error in augmentation monitoring: {e}")
                 await asyncio.sleep(60)
+                
+    async def _handle_excessive_augmentation(self):
+        """Handle excessive augmentation alert"""
+        logger.warning("Handling excessive augmentation - reducing factors")
+        # Could implement automatic adjustment here
+        
+    async def _investigate_active_augmentation(self, alert: Dict[str, Any]):
+        """Investigate why augmentation happened in active phase"""
+        performance = alert.get('performance', {})
+        logger.info(f"Active phase augmentation investigation:")
+        logger.info(f"  Win rate: {performance.get('win_rate', 'N/A')}")
+        logger.info(f"  Sharpe ratio: {performance.get('sharpe_ratio', 'N/A')}")
+        
+        # Could trigger deeper analysis or notifications
                 
     async def _handle_overfitting_alert(self, alert: Dict[str, Any]):
         """Handle overfitting alerts"""

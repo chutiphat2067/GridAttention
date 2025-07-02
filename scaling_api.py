@@ -26,6 +26,7 @@ class ScalingAPI:
         self.app.router.add_get('/api/metrics-history', self.get_metrics_history)
         self.app.router.add_post('/api/trigger-analysis', self.trigger_analysis)
         self.app.router.add_get('/api/bottlenecks', self.get_bottlenecks)
+        self.app.router.add_get('/augmentation/dashboard', self.augmentation_dashboard)
         self.app.router.add_static('/', path='./static', name='static')
         
     async def get_scaling_report(self, request):
@@ -71,6 +72,29 @@ class ScalingAPI:
         except Exception as e:
             logger.error(f"Error getting bottlenecks: {e}")
             return web.json_response({'error': str(e)}, status=500)
+            
+    async def augmentation_dashboard(self, request):
+        """Get augmentation monitoring dashboard"""
+        try:
+            # Get reference to grid system from app context
+            system = request.app.get('grid_system')
+            
+            if not system or not system.augmentation_manager:
+                return web.json_response({
+                    'error': 'Augmentation manager not initialized'
+                }, status=400)
+                
+            # Get dashboard data
+            dashboard_data = system.augmentation_manager.get_monitoring_dashboard()
+            
+            # Return JSON data
+            return web.json_response(dashboard_data)
+            
+        except Exception as e:
+            logger.error(f"Dashboard error: {e}")
+            return web.json_response({
+                'error': str(e)
+            }, status=500)
             
     async def start_server(self, port=8080):
         """Start API server"""

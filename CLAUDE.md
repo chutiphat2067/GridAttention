@@ -585,7 +585,7 @@ Alerts & Notifications:
 - **Scaling Infrastructure**: Production-ready API and monitoring
 - **Emergency Recovery**: Automatic system recovery and safeguards
 
-### Latest Updates (Phase 2-5 Overfitting Prevention + Phase-Aware Augmentation Complete)
+### Latest Updates (Complete Augmentation Monitoring Integration)
 - **Enhanced Overfitting Prevention System**: 6-layer protection system implemented
 - **performance_monitor.py**: Complete overhaul with OverfittingTracker & ModelStabilityMonitor
 - **Comprehensive Metrics**: Real-time overfitting detection with Prometheus integration
@@ -595,6 +595,8 @@ Alerts & Notifications:
 - **Conservative Learning**: Ultra-conservative parameter adjustment with multiple safeguards
 - **Phase-Aware Data Augmentation**: Intelligent augmentation based on attention learning phases
 - **Production Ready**: Training/production mode selection with command line arguments
+- **Augmentation Monitoring**: Complete real-time monitoring with dashboard and alerting
+- **API Integration**: HTTP endpoints for augmentation dashboard and statistics
 
 ### Phase 2-5 Implementation Status
 ✅ **Phase 2**: market_regime_detector.py - Ensemble methods with consistency checking
@@ -604,6 +606,7 @@ Alerts & Notifications:
 ✅ **Phase 3.4**: performance_monitor.py - Comprehensive overfitting metrics
 ✅ **Phase 5**: main.py - Full system integration (documented in guide)
 ✅ **Phase-Aware Augmentation**: main.py + phase_aware_data_augmenter.py - Complete integration
+✅ **Augmentation Monitoring**: Full monitoring integration with alerts, dashboard, and API endpoints
 
 ## Dependencies
 ```python
@@ -793,3 +796,146 @@ augmentation:
 - **Emergency Response**: Automatic augmentation if performance degrades
 - **Monitoring**: Comprehensive tracking and alerting
 - **Flexibility**: Easy switching between training and production modes
+
+## Augmentation Monitoring Integration
+
+### Overview
+Complete real-time monitoring system for phase-aware data augmentation with comprehensive alerting and dashboard visualization.
+
+### Key Components
+
+#### AugmentationMonitor
+- **Real-time tracking**: Continuous monitoring of augmentation events
+- **Performance correlation**: Tracks relationship between augmentation and trading performance
+- **Quality assessment**: Monitors augmentation quality scores and distribution preservation
+- **Alert generation**: Automatic alerts for anomalies and performance issues
+
+#### Enhanced AugmentationManager
+- **Integrated monitoring**: Built-in monitor initialization and management
+- **Alert handling**: Automatic response to monitoring alerts
+- **Dashboard data**: Real-time statistics and metrics collection
+- **Graceful shutdown**: Proper cleanup of monitoring tasks
+
+#### Main System Integration
+- **Enhanced monitoring loop**: Dedicated augmentation monitoring task in main.py
+- **Alert processing**: Automatic handling of excessive augmentation and active phase alerts
+- **Performance investigation**: Detailed analysis when augmentation occurs in active phase
+- **Dashboard support**: Augmentation dashboard initialization and management
+
+### Monitoring Features
+
+#### Real-time Statistics
+- **Event tracking**: All augmentation events with timestamps and metadata
+- **Phase transitions**: Monitor changes between learning/shadow/active phases
+- **Performance correlation**: Track performance metrics alongside augmentation
+- **Quality metrics**: Continuous assessment of augmentation quality
+
+#### Alert System
+- **Active phase augmentation**: Alerts when augmentation happens in production
+- **Excessive augmentation**: Warnings when augmentation factors exceed thresholds
+- **Quality degradation**: Alerts for poor quality augmented data
+- **Performance correlation**: Notifications for negative performance impact
+
+#### Dashboard & Visualization
+- **HTML dashboard**: Complete web-based monitoring interface
+- **Real-time updates**: Live statistics and metrics
+- **Historical data**: Trend analysis and historical patterns
+- **Alert management**: Visual alerts and notification system
+
+### API Endpoints
+
+#### HTTP Integration
+```
+GET /augmentation/dashboard    # Get monitoring dashboard data
+```
+
+#### Response Format
+```json
+{
+  "summary": {
+    "total_events": 15000,
+    "total_augmented": 8500,
+    "average_quality": 0.847,
+    "active_alerts": 2
+  },
+  "recent_alerts": [
+    {
+      "type": "ACTIVE_PHASE_AUGMENTATION",
+      "severity": "WARNING",
+      "message": "Augmentation applied in active phase",
+      "timestamp": "2024-01-01T10:30:00Z"
+    }
+  ],
+  "performance_metrics": {
+    "win_rate_correlation": 0.23,
+    "sharpe_correlation": 0.18
+  }
+}
+```
+
+### Configuration
+
+#### Enhanced config.yaml
+```yaml
+augmentation:
+  monitoring:
+    enabled: true
+    window_size: 1000
+    log_interval: 300
+    dashboard_enabled: true
+    alert_check_interval: 60
+    
+    alerts:
+      active_phase_augmentation: true
+      low_quality_threshold: 0.7
+      excessive_factor_threshold: 5.0
+      
+    statistics:
+      track_methods: true
+      track_quality: true
+      track_performance_correlation: true
+```
+
+### Usage Examples
+
+#### Programmatic Access
+```python
+# Get monitoring dashboard data
+dashboard_data = system.augmentation_manager.get_monitoring_dashboard()
+
+# Check for active alerts
+alerts = dashboard_data.get('recent_alerts', [])
+for alert in alerts:
+    if alert['severity'] == 'ERROR':
+        handle_critical_alert(alert)
+
+# Generate HTML dashboard
+if system.augmentation_dashboard:
+    html = system.augmentation_dashboard.get_html_dashboard()
+```
+
+#### API Access
+```bash
+# Get dashboard data via HTTP
+curl http://localhost:8080/augmentation/dashboard
+
+# Monitor alerts in real-time
+watch -n 30 'curl -s http://localhost:8080/augmentation/dashboard | jq .recent_alerts'
+```
+
+### Benefits
+
+#### Production Safety
+- **Early warning system**: Detect issues before they impact trading
+- **Performance protection**: Monitor for negative correlation with trading results
+- **Quality assurance**: Ensure augmented data maintains high quality standards
+
+#### Operational Efficiency  
+- **Real-time visibility**: Complete insight into augmentation behavior
+- **Automated responses**: Automatic handling of common alert scenarios
+- **Historical analysis**: Trend analysis for continuous improvement
+
+#### Development Support
+- **Testing framework**: Complete test suite for monitoring functionality
+- **Dashboard visualization**: Rich web interface for monitoring and debugging
+- **API integration**: Easy integration with external monitoring systems

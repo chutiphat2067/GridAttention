@@ -173,6 +173,22 @@ augmentation:
     
   # Statistics and monitoring
   monitoring:
+    enabled: true
+    window_size: 1000  # Number of events to track
     log_interval: 300  # seconds
     save_stats_interval: 3600  # seconds
     alert_on_active_augmentation: true
+    dashboard_enabled: true
+    alert_check_interval: 60  # Check alerts every minute
+    
+    # Alert thresholds
+    alerts:
+      active_phase_augmentation: true
+      low_quality_threshold: 0.7
+      excessive_factor_threshold: 5.0
+    
+    # Statistics collection
+    statistics:
+      track_methods: true
+      track_quality: true
+      track_performance_correlation: true
