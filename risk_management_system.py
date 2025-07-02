@@ -1673,6 +1673,11 @@ class RiskManagementSystem:
             'concentration': self.current_metrics.concentration_by_symbol
         }
         
+    async def activate_kill_switch(self, reason: str) -> None:
+        """Activate kill switch - emergency stop all trading"""
+        await self._trigger_emergency_stop(f"Kill switch activated: {reason}")
+        logger.critical(f"KILL SWITCH ACTIVATED: {reason}")
+    
     async def reset_emergency_stop(self) -> None:
         """Reset emergency stop (manual intervention required)"""
         async with self._lock:
@@ -1705,6 +1710,41 @@ class RiskManagementSystem:
             json.dump(state, f, indent=2)
             
         logger.info(f"Saved risk system state to {filepath}")
+        
+    async def health_check(self) -> Dict[str, Any]:
+        """Check component health"""
+        return {
+            'healthy': True,
+            'is_running': getattr(self, 'is_running', True),
+            'error_count': getattr(self, 'error_count', 0),
+            'last_error': getattr(self, 'last_error', None)
+        }
+
+    async def is_healthy(self) -> bool:
+        """Quick health check"""
+        health = await self.health_check()
+        return health.get('healthy', True)
+
+    async def recover(self) -> bool:
+        """Recover from failure"""
+        try:
+            self.error_count = 0
+            self.last_error = None
+            return True
+        except Exception as e:
+            logger.error(f"Recovery failed: {e}")
+            return False
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get component state for checkpointing"""
+        return {
+            'class': self.__class__.__name__,
+            'timestamp': time.time()
+        }
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+        """Load component state from checkpoint"""
+        pass
 
 
 # Example usage
@@ -1799,99 +1839,5 @@ async def main():
 
 
 
-    async def health_check(self) -> Dict[str, Any]:
-            """Check component health"""
-            return {
-                'healthy': True,
-                'is_running': getattr(self, 'is_running', True),
-                'error_count': getattr(self, 'error_count', 0),
-                'last_error': getattr(self, 'last_error', None)
-            }
-
-    async def is_healthy(self) -> bool:
-            """Quick health check"""
-            health = await self.health_check()
-            return health.get('healthy', True)
-
-    async def recover(self) -> bool:
-            """Recover from failure"""
-            try:
-                self.error_count = 0
-                self.last_error = None
-                return True
-            except Exception as e:
-                print(f"Recovery failed: {e}")
-                return False
-
-    def get_state(self) -> Dict[str, Any]:
-            """Get component state for checkpointing"""
-            return {
-                'class': self.__class__.__name__,
-                'timestamp': time.time() if 'time' in globals() else 0
-            }
-
-    def load_state(self, state: Dict[str, Any]) -> None:
-            """Load component state from checkpoint"""
-            pass
-
-    async def get_latest_data(self):
-            """Get latest market data - fix for missing method"""
-            if hasattr(self, 'market_data_buffer') and self.market_data_buffer:
-                return self.market_data_buffer[-1]
-            # Return mock data if no real data
-            return {
-                'symbol': 'BTC/USDT',
-                'price': 50000,
-                'volume': 1.0,
-                'timestamp': time.time()
-            }
-
-    async def health_check(self) -> Dict[str, Any]:
-            """Check component health"""
-            return {
-                'healthy': True,
-                'is_running': getattr(self, 'is_running', True),
-                'error_count': getattr(self, 'error_count', 0),
-                'last_error': getattr(self, 'last_error', None)
-            }
-
-    async def is_healthy(self) -> bool:
-            """Quick health check"""
-            health = await self.health_check()
-            return health.get('healthy', True)
-
-    async def recover(self) -> bool:
-            """Recover from failure"""
-            try:
-                self.error_count = 0
-                self.last_error = None
-                return True
-            except Exception as e:
-                print(f"Recovery failed: {e}")
-                return False
-
-    async def health_check(self) -> Dict[str, Any]:
-        """Check component health"""
-        return {
-            'healthy': True,
-            'is_running': getattr(self, 'is_running', True),
-            'error_count': getattr(self, 'error_count', 0),
-            'last_error': getattr(self, 'last_error', None)
-        }
-
-    async def is_healthy(self) -> bool:
-        """Quick health check"""
-        health = await self.health_check()
-        return health.get('healthy', True)
-
-    async def recover(self) -> bool:
-        """Recover from failure"""
-        try:
-            self.error_count = 0
-            self.last_error = None
-            return True
-        except Exception as e:
-            print(f"Recovery failed: {e}")
-            return False
 if __name__ == "__main__":
     asyncio.run(main())
