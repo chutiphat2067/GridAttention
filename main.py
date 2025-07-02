@@ -33,6 +33,7 @@ from overfitting_detector import OverfittingDetector, OverfittingMonitor, Overfi
 from checkpoint_manager import CheckpointManager
 from data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augmentation_pipeline
 from adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
+from essential_fixes import apply_essential_fixes, KillSwitch
 
 # Setup logger
 logging.basicConfig(
@@ -74,6 +75,7 @@ class GridTradingSystem:
         self.overfitting_monitor = None
         self.checkpoint_manager = None
         self.recovery_manager = None
+        self.components = apply_essential_fixes(self.components)
         
     def _load_config(self, path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -211,6 +213,16 @@ class GridTradingSystem:
             await self._load_latest_checkpoint()
             
             logger.info("✅ All components initialized successfully!")
+            
+            # Apply essential fixes after initialization
+            logger.info("Applying essential fixes...")
+            self.components = apply_essential_fixes(self.components)
+            logger.info("✓ Essential fixes applied")
+            
+            # Add kill switch to risk manager if not present
+            if 'risk_manager' in self.components and not hasattr(self.components['risk_manager'], 'kill_switch'):
+                self.components['risk_manager'].kill_switch = KillSwitch()
+                logger.info("✓ Kill switch added to risk manager")
             
         except Exception as e:
             logger.critical(f"Failed to initialize system: {e}")
