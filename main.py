@@ -35,6 +35,13 @@ from data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augm
 from adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
 from essential_fixes import apply_essential_fixes, KillSwitch
 
+# Phase-aware augmentation components
+from phase_aware_data_augmenter import (
+    PhaseAwareDataAugmenter, 
+    AugmentationManager,
+    create_phase_aware_augmentation_config
+)
+
 # Setup logger
 logging.basicConfig(
     level=logging.INFO,
@@ -69,6 +76,7 @@ class GridTradingSystem:
         self.error_count = 0
         self.last_heartbeat = datetime.now()
         self.scaling_monitor = None
+        self.tick_count = 0
         
         # Overfitting protection
         self.overfitting_detector = None
@@ -76,6 +84,10 @@ class GridTradingSystem:
         self.checkpoint_manager = None
         self.recovery_manager = None
         self.components = apply_essential_fixes(self.components)
+        
+        # Phase-aware augmentation
+        self.augmentation_manager = None
+        self.training_mode = self.config.get('augmentation', {}).get('training_mode_default', True)
         
     def _load_config(self, path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -194,6 +206,26 @@ class GridTradingSystem:
                 )
                 logger.info("✓ Adaptive Learning Scheduler initialized")
             
+            # === Phase-Aware Augmentation Setup ===
+            
+            # Get augmentation configuration from main config
+            aug_config = self.config.get('augmentation', {})
+            
+            # Use default config if not provided
+            if not aug_config:
+                aug_config = create_phase_aware_augmentation_config()['augmentation']
+                logger.warning("No augmentation config found, using defaults")
+            
+            # Merge with overfitting config if provided
+            if 'augmentation' in self.overfitting_config:
+                aug_config.update(self.overfitting_config['augmentation'])
+                
+            # Initialize augmentation manager
+            self.augmentation_manager = AugmentationManager(aug_config)
+            await self.augmentation_manager.initialize(self.components['attention'])
+            
+            logger.info("✓ Phase-Aware Data Augmentation initialized")
+            
             # === System Integration ===
             
             # Initialize Performance Monitor with all components
@@ -247,7 +279,8 @@ class GridTradingSystem:
                 asyncio.create_task(self._monitoring_loop()),
                 asyncio.create_task(self._checkpoint_loop()),
                 asyncio.create_task(self._health_check_loop()),
-                asyncio.create_task(self._overfitting_monitoring_loop())
+                asyncio.create_task(self._overfitting_monitoring_loop()),
+                asyncio.create_task(self._augmentation_monitoring_loop())
             ]
             
             # Start component-specific tasks
@@ -308,23 +341,60 @@ class GridTradingSystem:
     async def _process_market_tick(self, tick):
         """Process single market tick through entire pipeline"""
         try:
-            # 1. Feature extraction
-            features = await self.components['features'].extract_features(
-                await self.components['market_data'].get_recent_data(tick.symbol, 100)
-            )
+            # Increment tick counter
+            self.tick_count += 1
             
-            # 2. Apply attention
-            enhanced_features = await self.components['attention'].process_market_data(
-                features.features,
-                await self.components['market_data'].get_recent_data(tick.symbol, 100)
-            )
+            # 1. Store original tick
+            await self.components['market_data'].process_tick(tick)
             
-            # 3. Detect market regime
+            # 2. Get recent data for feature extraction
+            recent_data = await self.components['market_data'].get_recent_data(tick.symbol, 100)
+            
+            # 3. Extract features
+            features = await self.components['features'].extract_features(recent_data)
+            
+            if not features:
+                return
+                
+            # 4. Detect regime
             regime, confidence = await self.components['regime_detector'].detect_regime(
-                enhanced_features
+                features.features
             )
             
-            # 4. Select strategy
+            # 5. Prepare context
+            context = {
+                'timestamp': tick.timestamp,
+                'regime': regime,
+                'regime_confidence': confidence,
+                'performance': await self._get_recent_performance(),
+                'trade_id': f"{tick.symbol}_{tick.timestamp}"
+            }
+            
+            # 6. Apply phase-aware augmentation and process
+            if self.training_mode and self.augmentation_manager:
+                # Process with augmentation based on current phase
+                aug_result = await self.augmentation_manager.process_tick(
+                    tick,
+                    features.features,
+                    regime,
+                    context
+                )
+                
+                # Use the processed results
+                enhanced_features = aug_result['results'][0] if aug_result['results'] else features.features
+                
+                # Log augmentation stats periodically
+                if self.tick_count % 1000 == 0:
+                    aug_stats = self.augmentation_manager.get_stats()
+                    logger.info(f"Augmentation stats: {aug_stats}")
+            else:
+                # Production mode - process without augmentation
+                enhanced_features = await self.components['attention'].process_market_data(
+                    features.features,
+                    recent_data
+                )
+                
+            # 7. Select strategy
             strategy = await self.components['strategy_selector'].select_strategy(
                 regime, 
                 enhanced_features
@@ -354,6 +424,24 @@ class GridTradingSystem:
             
         except Exception as e:
             logger.error(f"Error processing market tick: {e}")
+            
+    async def _get_recent_performance(self) -> Dict[str, float]:
+        """Get recent performance metrics for augmentation decisions"""
+        if not self.components.get('performance_monitor'):
+            return {'win_rate': 0.5, 'sharpe_ratio': 0.0}
+            
+        try:
+            metrics = await self.components['performance_monitor'].get_current_metrics()
+            
+            return {
+                'win_rate': metrics.get('win_rate', 0.5),
+                'sharpe_ratio': metrics.get('sharpe_ratio', 0.0),
+                'total_pnl': metrics.get('total_pnl', 0.0),
+                'drawdown': metrics.get('current_drawdown', 0.0)
+            }
+        except Exception as e:
+            logger.warning(f"Could not get performance metrics: {e}")
+            return {'win_rate': 0.5, 'sharpe_ratio': 0.0, 'total_pnl': 0.0, 'drawdown': 0.0}
             
     async def _monitoring_loop(self):
         """Performance monitoring loop"""
@@ -466,6 +554,39 @@ class GridTradingSystem:
             except Exception as e:
                 logger.error(f"Error in overfitting monitoring: {e}")
                 await asyncio.sleep(300)
+                
+    async def _augmentation_monitoring_loop(self):
+        """Monitor and log augmentation statistics"""
+        while self._running:
+            try:
+                if self.augmentation_manager:
+                    stats = self.augmentation_manager.get_stats()
+                    
+                    # Get current phase and progress
+                    phase = self.components['attention'].phase
+                    try:
+                        progress = self.components['attention'].get_learning_progress()
+                    except:
+                        progress = 0.0
+                    
+                    logger.info(f"""
+                    Augmentation Statistics:
+                    - Phase: {phase} (Progress: {progress:.1%})
+                    - Total Augmented: {stats.get('total_augmented', 0):,}
+                    - Learning Phase: {stats.get('augmentation_by_phase', {}).get('learning', 0):,}
+                    - Shadow Phase: {stats.get('augmentation_by_phase', {}).get('shadow', 0):,}
+                    - Active Phase: {stats.get('augmentation_by_phase', {}).get('active', 0):,}
+                    """)
+                    
+                    # Alert if augmentation in active phase (unusual)
+                    if phase == 'ACTIVE' and stats.get('augmentation_by_phase', {}).get('active', 0) > 0:
+                        logger.warning("Augmentation applied in ACTIVE phase - check performance")
+                        
+                await asyncio.sleep(300)  # Log every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"Error in augmentation monitoring: {e}")
+                await asyncio.sleep(60)
                 
     async def _handle_overfitting_alert(self, alert: Dict[str, Any]):
         """Handle overfitting alerts"""
@@ -648,6 +769,16 @@ def main():
         action='store_true',
         help='Enable debug logging'
     )
+    parser.add_argument(
+        '--training-mode', 
+        action='store_true',
+        help='Enable training mode with augmentation'
+    )
+    parser.add_argument(
+        '--production',
+        action='store_true',
+        help='Production mode - no augmentation'
+    )
     
     args = parser.parse_args()
     
@@ -661,6 +792,13 @@ def main():
             config_path=args.config,
             overfitting_config_path=args.overfitting_config
         )
+        
+        # Set mode
+        system.training_mode = not args.production
+        if args.training_mode:
+            system.training_mode = True
+            
+        logger.info(f"Starting in {'TRAINING' if system.training_mode else 'PRODUCTION'} mode")
         
         # Run system
         asyncio.run(system.start())

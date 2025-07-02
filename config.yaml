@@ -114,3 +114,65 @@ scaling_monitor:
   # Export settings
   export_metrics: true
   export_path: "./metrics_export/"
+
+# Phase-Aware Data Augmentation
+augmentation:
+  enabled: true
+  training_mode_default: true  # Default to training mode
+  
+  # Phase-specific configurations
+  phases:
+    learning:
+      enabled: true
+      augmentation_factor: 3.0  # 3x original data
+      methods:
+        - noise_injection
+        - time_warping
+        - magnitude_warping
+        - bootstrap_sampling
+        - synthetic_patterns
+        - feature_dropout
+      noise_level: moderate
+      preserve_correlations: true
+      
+    shadow:
+      enabled: true
+      augmentation_factor: 1.5  # 1.5x original data
+      methods:
+        - noise_injection
+        - bootstrap_sampling
+      noise_level: conservative
+      preserve_correlations: true
+      
+    active:
+      enabled: false  # Disabled by default in production
+      augmentation_factor: 1.0  # No augmentation
+      methods: []
+      noise_level: none
+      emergency_augmentation: true  # Enable if performance drops
+      
+  # Augmentation scheduler settings
+  scheduler:
+    performance_thresholds:
+      min_win_rate: 0.45
+      min_sharpe_ratio: 0.5
+    degradation_detection:
+      enabled: true
+      window_size: 1000
+      threshold: 0.1
+    adaptive_factor:
+      enabled: true
+      min_factor: 1.0
+      max_factor: 3.0
+      
+  # Quality control
+  quality:
+    min_quality_score: 0.8
+    correlation_preservation_threshold: 0.2
+    distribution_test_threshold: 0.2
+    
+  # Statistics and monitoring
+  monitoring:
+    log_interval: 300  # seconds
+    save_stats_interval: 3600  # seconds
+    alert_on_active_augmentation: true

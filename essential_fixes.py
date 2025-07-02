@@ -342,7 +342,7 @@ def apply_essential_fixes(components: Dict[str, Any]) -> Dict[str, Any]:
             
         # Add load_state if missing
         if not hasattr(component, 'load_state'):
-            def load_state(self=component, state):
+            def load_state(state, self=component):
                 logger.info(f"Loading state for {name}")
             component.load_state = load_state
             

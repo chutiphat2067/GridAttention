@@ -519,9 +519,10 @@ Alerts & Notifications:
 **Architecture**: Async event loop with component coordination
 
 #### File: config.yaml
-**Purpose**: Centralized system configuration
-**Sections**: Trading parameters, risk limits, API settings, model parameters
+**Purpose**: Centralized system configuration including phase-aware augmentation
+**Sections**: Trading parameters, risk limits, API settings, model parameters, augmentation configuration
 **Format**: YAML with environment-specific overrides
+**Augmentation**: Complete phase-aware augmentation configuration with learning/shadow/active phase settings
 
 #### File: requirements.txt
 **Purpose**: Python dependency specification
@@ -584,7 +585,7 @@ Alerts & Notifications:
 - **Scaling Infrastructure**: Production-ready API and monitoring
 - **Emergency Recovery**: Automatic system recovery and safeguards
 
-### Latest Updates (Phase 2-5 Overfitting Prevention Complete)
+### Latest Updates (Phase 2-5 Overfitting Prevention + Phase-Aware Augmentation Complete)
 - **Enhanced Overfitting Prevention System**: 6-layer protection system implemented
 - **performance_monitor.py**: Complete overhaul with OverfittingTracker & ModelStabilityMonitor
 - **Comprehensive Metrics**: Real-time overfitting detection with Prometheus integration
@@ -592,6 +593,8 @@ Alerts & Notifications:
 - **Emergency Response**: Automatic safe mode and parameter reset capabilities
 - **Risk Integration**: Overfitting risk factored into all trading decisions
 - **Conservative Learning**: Ultra-conservative parameter adjustment with multiple safeguards
+- **Phase-Aware Data Augmentation**: Intelligent augmentation based on attention learning phases
+- **Production Ready**: Training/production mode selection with command line arguments
 
 ### Phase 2-5 Implementation Status
 ✅ **Phase 2**: market_regime_detector.py - Ensemble methods with consistency checking
@@ -600,6 +603,7 @@ Alerts & Notifications:
 ✅ **Phase 3.3**: feedback_loop.py - Ultra-conservative adjustment rates
 ✅ **Phase 3.4**: performance_monitor.py - Comprehensive overfitting metrics
 ✅ **Phase 5**: main.py - Full system integration (documented in guide)
+✅ **Phase-Aware Augmentation**: main.py + phase_aware_data_augmenter.py - Complete integration
 
 ## Dependencies
 ```python
@@ -620,6 +624,15 @@ logging
 ```python
 # Main execution flow
 python main.py
+
+# Training mode (with augmentation)
+python main.py --training-mode
+
+# Production mode (no augmentation) 
+python main.py --production
+
+# Debug mode
+python main.py --debug
 
 # Warmup system
 python warmup_main.py
@@ -669,3 +682,114 @@ python scaling_api.py
 - **State preservation**: Overfitting state saved across system restarts
 - **Graceful degradation**: Progressive risk reduction based on overfitting severity
 - **Learning suspension**: Temporary disable of all adaptive features in emergency mode
+
+## Phase-Aware Data Augmentation System
+
+### Overview
+The phase-aware augmentation system intelligently applies data augmentation based on the current attention learning phase, ensuring optimal training without interfering with live trading.
+
+### Augmentation Phases
+
+#### Learning Phase
+- **Strategy**: Aggressive augmentation for maximum diversity
+- **Factor**: 3x data augmentation
+- **Methods**: All techniques enabled (noise, time warping, magnitude warping, bootstrap, synthetic patterns, feature dropout)
+- **Purpose**: Rapid learning and pattern recognition
+
+#### Shadow Phase  
+- **Strategy**: Moderate augmentation based on performance
+- **Factor**: 1.5x data augmentation (performance-dependent)
+- **Methods**: Conservative techniques (noise injection, bootstrap sampling)
+- **Purpose**: Refinement and validation
+
+#### Active Phase
+- **Strategy**: Minimal to no augmentation
+- **Factor**: 1.0x (original data only)
+- **Methods**: Emergency-only augmentation if significant drawdown detected
+- **Purpose**: Pure live trading without artificial data
+
+### Key Components
+
+#### PhaseAwareDataAugmenter
+- **Purpose**: Core augmentation engine with phase-specific configurations
+- **Features**: 
+  - Automatic phase detection
+  - Method selection based on learning stage
+  - Quality preservation and correlation maintenance
+  - Performance-based augmentation scaling
+
+#### AugmentationScheduler
+- **Purpose**: Intelligent scheduling based on learning progress and performance
+- **Features**:
+  - Performance degradation detection
+  - Dynamic augmentation factor calculation
+  - Emergency augmentation triggers
+  - Learning progress integration
+
+#### AugmentationManager
+- **Purpose**: System-wide augmentation coordination
+- **Features**:
+  - Real-time statistics tracking
+  - Phase-based monitoring
+  - Integration with main trading loop
+  - Comprehensive logging and alerting
+
+### Integration with Main System
+
+#### Enhanced main.py Features
+- **Phase detection**: Automatic detection of current attention phase
+- **Context-aware processing**: Performance metrics integration for augmentation decisions
+- **Monitoring**: Dedicated augmentation monitoring loop
+- **Command line control**: `--training-mode` and `--production` flags
+- **Statistics tracking**: Real-time augmentation statistics and performance impact
+
+#### Configuration Options (config.yaml)
+```yaml
+augmentation:
+  enabled: true
+  training_mode_default: true  # Default to training mode
+  
+  phases:
+    learning:
+      enabled: true
+      augmentation_factor: 3.0  # 3x original data
+      methods: [noise_injection, time_warping, magnitude_warping, bootstrap_sampling, synthetic_patterns, feature_dropout]
+      noise_level: moderate
+      preserve_correlations: true
+      
+    shadow:
+      enabled: true
+      augmentation_factor: 1.5  # 1.5x original data
+      methods: [noise_injection, bootstrap_sampling]
+      noise_level: conservative
+      
+    active:
+      enabled: false  # Disabled by default in production
+      augmentation_factor: 1.0  # No augmentation
+      emergency_augmentation: true  # Enable if performance drops
+      
+  scheduler:
+    performance_thresholds:
+      min_win_rate: 0.45
+      min_sharpe_ratio: 0.5
+    degradation_detection:
+      enabled: true
+      window_size: 1000
+      threshold: 0.1
+      
+  quality:
+    min_quality_score: 0.8
+    correlation_preservation_threshold: 0.2
+    
+  monitoring:
+    log_interval: 300  # seconds
+    alert_on_active_augmentation: true
+```
+
+### Benefits
+- **Optimal Learning**: Maximum augmentation during learning phase
+- **Safe Transition**: Gradual reduction as system moves to production
+- **Performance Protection**: No interference with live trading
+- **Emergency Response**: Automatic augmentation if performance degrades
+- **Monitoring**: Comprehensive tracking and alerting
+- **Flexibility**: Easy switching between training and production modes

@@ -1672,33 +1672,33 @@ class LatencyMonitor:
         return np.percentile(list(self.latencies), percentile)
         
     def is_meeting_target(self) -> bool:
-       """Check if meeting latency target"""
-       if not self.latencies:
-           return True
-       p99 = self.get_percentile(99)
-       return p99 <= self.target_latency
-       
-   def get_statistics(self) -> Dict[str, float]:
-       """Get latency statistics"""
-       if not self.latencies:
-           return {
-               'mean': 0.0,
-               'p50': 0.0,
-               'p95': 0.0,
-               'p99': 0.0,
-               'min': 0.0,
-               'max': 0.0
-           }
-           
-       latency_list = list(self.latencies)
-       return {
-           'mean': np.mean(latency_list),
-           'p50': np.percentile(latency_list, 50),
-           'p95': np.percentile(latency_list, 95),
-           'p99': np.percentile(latency_list, 99),
-           'min': min(latency_list),
-           'max': max(latency_list)
-       }
+        """Check if meeting latency target"""
+        if not self.latencies:
+            return True
+        p99 = self.get_percentile(99)
+        return p99 <= self.target_latency
+        
+    def get_statistics(self) -> Dict[str, float]:
+        """Get latency statistics"""
+        if not self.latencies:
+            return {
+                'mean': 0.0,
+                'p50': 0.0,
+                'p95': 0.0,
+                'p99': 0.0,
+                'min': 0.0,
+                'max': 0.0
+            }
+            
+        latency_list = list(self.latencies)
+        return {
+            'mean': np.mean(latency_list),
+            'p50': np.percentile(latency_list, 50),
+            'p95': np.percentile(latency_list, 95),
+            'p99': np.percentile(latency_list, 99),
+            'min': min(latency_list),
+            'max': max(latency_list)
+        }
 
 
 # Example usage
