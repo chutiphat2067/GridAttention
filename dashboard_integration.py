@@ -15,6 +15,7 @@ from aiohttp import web
 import aiohttp
 from aiohttp.web import WebSocketResponse
 import psutil
+from performance_cache import metrics_cache
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +27,24 @@ class DashboardDataCollector:
         self.system = grid_system
         self.last_values = {}
         self.start_time = time.time()
+        self.update_interval = 5  # Seconds between updates
+        self.last_update = 0
         
     async def collect_all_data(self) -> Dict[str, Any]:
-        """Collect comprehensive data from all components"""
+        """Collect comprehensive data from all components with caching"""
         try:
+            # Use cached data for expensive operations
             data = {
                 'timestamp': datetime.now().isoformat(),
-                'system_status': await self._get_system_status(),
-                'critical_metrics': await self._get_critical_metrics(),
-                'learning_status': await self._get_learning_status(),
-                'augmentation': await self._get_augmentation_status(),
-                'trading_activity': await self._get_trading_activity(),
-                'market_analysis': await self._get_market_analysis(),
-                'system_health': await self._get_system_health(),
-                'risk_controls': await self._get_risk_controls(),
-                'logs': await self._get_recent_logs()
+                'system_status': await metrics_cache.cache_dashboard_data('system_status', self._get_system_status),
+                'critical_metrics': await metrics_cache.cache_dashboard_data('critical_metrics', self._get_critical_metrics),
+                'learning_status': await metrics_cache.cache_dashboard_data('learning_status', self._get_learning_status),
+                'augmentation': await metrics_cache.cache_dashboard_data('augmentation', self._get_augmentation_status),
+                'trading_activity': await metrics_cache.cache_dashboard_data('trading_activity', self._get_trading_activity),
+                'market_analysis': await metrics_cache.cache_dashboard_data('market_analysis', self._get_market_analysis),
+                'system_health': await metrics_cache.cache_dashboard_data('system_health', self._get_system_health),
+                'risk_controls': await metrics_cache.cache_dashboard_data('risk_controls', self._get_risk_controls),
+                'logs': await self._get_recent_logs()  # Don't cache logs as they need to be fresh
             }
             
             # Calculate changes
@@ -713,11 +717,44 @@ system.dashboard_enabled = not args.no_dashboard
 """
 
 
+class ThrottledDashboardCollector(DashboardDataCollector):
+    """Throttled dashboard collector with reduced update frequency"""
+    
+    def __init__(self, grid_system, update_interval=10):
+        super().__init__(grid_system)
+        self.update_interval = update_interval
+        self.last_update = 0
+        self.cached_data = {}
+        
+    async def collect_all_data(self) -> Dict[str, Any]:
+        """Collect data with throttling"""
+        now = time.time()
+        if now - self.last_update < self.update_interval:
+            # Return cached data if update interval hasn't passed
+            if self.cached_data:
+                return self.cached_data
+                
+        # Update cache
+        self.cached_data = await super().collect_all_data()
+        self.last_update = now
+        return self.cached_data
+
+# Use throttled collector for better performance
+def integrate_dashboard_optimized(grid_system, update_interval=10):
+    """Integrate dashboard with optimized performance"""
+    collector = ThrottledDashboardCollector(grid_system, update_interval)
+    
+    # Use the existing integration but with throttled collector
+    dashboard_server = DashboardServer(grid_system)
+    dashboard_server.collector = collector  # Replace default collector
+    
+    return dashboard_server
+
 if __name__ == "__main__":
     # Example standalone usage
     print("Dashboard Integration Module")
     print("This module should be imported by main.py")
     print("\nTo use:")
-    print("1. Import in main.py: from dashboard_integration import integrate_dashboard")
-    print("2. Call after system init: integrate_dashboard(system)")
+    print("1. Import in main.py: from dashboard_integration import integrate_dashboard_optimized")
+    print("2. Call after system init: integrate_dashboard_optimized(system)")
     print("3. Access dashboard at: http://localhost:8080")

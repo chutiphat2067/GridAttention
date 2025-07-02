@@ -35,6 +35,8 @@ from data_augmentation import MarketDataAugmenter, FeatureAugmenter, create_augm
 from adaptive_learning_scheduler import AdaptiveLearningScheduler, LearningRateMonitor
 from essential_fixes import apply_essential_fixes, KillSwitch
 from system_coordinator import SystemCoordinator
+from resource_limiter import set_resource_limits, resource_monitor
+from performance_cache import optimize_memory
 
 # Phase-aware augmentation components
 from phase_aware_data_augmenter import (
@@ -45,7 +47,7 @@ from phase_aware_data_augmenter import (
 from augmentation_monitor import AugmentationDashboard
 
 # Dashboard integration
-from dashboard_integration import integrate_dashboard
+from dashboard_integration import integrate_dashboard_optimized
 
 # Setup logger
 logging.basicConfig(
@@ -99,6 +101,10 @@ class GridTradingSystem:
         # Dashboard integration
         self.dashboard_enabled = True
         self.dashboard_server = None
+        
+        # Performance optimization
+        self.performance_mode = 'normal'  # 'normal', 'minimal', 'high_performance'
+        self.resource_limits_applied = False
         
     def _load_config(self, path: str) -> Dict[str, Any]:
         """Load configuration from YAML file"""
@@ -182,8 +188,10 @@ class GridTradingSystem:
             # === Dashboard Integration ===
             
             if self.dashboard_enabled:
-                self.dashboard_server = integrate_dashboard(self)
-                logger.info("✓ Dashboard server initialized")
+                # Use optimized dashboard with reduced update frequency
+                update_interval = self.config.get('dashboard', {}).get('update_interval', 10)
+                self.dashboard_server = integrate_dashboard_optimized(self, update_interval)
+                logger.info(f"✓ Optimized dashboard server initialized (update interval: {update_interval}s)")
             
             # === System Integration ===
             
@@ -253,10 +261,54 @@ class GridTradingSystem:
             
         except Exception as e:
             logger.error(f"Failed to initialize legacy components: {e}")
+    
+    def apply_performance_optimizations(self):
+        """Apply performance optimizations based on config"""
+        try:
+            # Check if minimal config is being used
+            config_file = getattr(self, '_config_file', '')
+            if 'minimal' in config_file:
+                self.performance_mode = 'minimal'
+                
+            # Apply resource limits
+            if not self.resource_limits_applied:
+                perf_config = self.config.get('performance_optimization', {})
+                
+                resource_config = {
+                    'max_memory_mb': self.config.get('memory', {}).get('max_memory_mb', 2048),
+                    'max_cpu_cores': perf_config.get('max_workers', 2),
+                    'process_priority': 10
+                }
+                
+                set_resource_limits(resource_config)
+                self.resource_limits_applied = True
+                logger.info(f"✓ Performance optimizations applied (mode: {self.performance_mode})")
+                
+            # Start resource monitoring if enabled
+            monitoring_config = self.config.get('monitoring', {})
+            if monitoring_config.get('resource_monitoring', True):
+                import asyncio
+                asyncio.create_task(resource_monitor.start_monitoring())
+                
+        except Exception as e:
+            logger.warning(f"Failed to apply performance optimizations: {e}")
+    
+    async def optimize_memory(self):
+        """Perform memory optimization"""
+        try:
+            result = optimize_memory()
+            logger.info(f"Memory optimized: freed {result['memory_freed_mb']:.1f}MB")
+            return result
+        except Exception as e:
+            logger.error(f"Memory optimization failed: {e}")
+            return None
             
     async def start(self):
         """Start the trading system"""
         try:
+            # Apply performance optimizations first
+            self.apply_performance_optimizations()
+            
             # Initialize components
             await self.initialize()
             
@@ -266,6 +318,9 @@ class GridTradingSystem:
             
             logger.info("Starting Grid Trading System...")
             self._running = True
+            
+            # Optimize memory after initialization
+            await self.optimize_memory()
             
             # Start core tasks
             self._tasks = [
@@ -284,6 +339,10 @@ class GridTradingSystem:
                     
             # Start overfitting monitor
             await self.overfitting_monitor.start_monitoring()
+            
+            # Start dashboard server if enabled
+            if self.dashboard_enabled and self.dashboard_server:
+                await self.dashboard_server.start()
             
             logger.info("🚀 System started successfully!")
             
@@ -319,8 +378,8 @@ class GridTradingSystem:
                     # Process through pipeline
                     await self._process_market_tick(market_data)
                     
-                # Small delay to prevent busy waiting
-                await asyncio.sleep(0.1)
+                # Reduced frequency to prevent CPU overload
+                await asyncio.sleep(1.0)  # Changed from 0.1 to 1.0 seconds
                 
             except Exception as e:
                 logger.error(f"Error in main trading loop: {e}")
