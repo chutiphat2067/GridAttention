@@ -26,8 +26,8 @@ from datetime import datetime, timedelta
 import warnings
 from typing import List, Dict, Optional, Tuple
 
-# Assuming the module structure
-from src.models.prediction_models import (
+# GridAttention project imports
+from models.prediction_models import (
     PricePredictionModel,
     ARIMAPredictor,
     GARCHPredictor,

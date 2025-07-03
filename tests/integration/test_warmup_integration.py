@@ -1,740 +1,591 @@
-"""
-Warmup System Integration Test for GridAttention
-Tests the warmup functionality and accelerated learning
-"""
+# tests/integration/test_warmup_integration.py
 
+import pytest
 import asyncio
-import json
-import time
+from unittest.mock import Mock, AsyncMock, patch
+from datetime import datetime, timedelta
+import pandas as pd
 import numpy as np
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-import tempfile
-import logging
+from typing import Dict, List, Any
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from core.warmup_manager import WarmupManager
+from core.attention_learning_layer import AttentionLearningLayer
+from core.market_regime_detector import MarketRegimeDetector
+from core.grid_strategy_selector import GridStrategySelector
+from core.risk_management_system import RiskManagementSystem
+from data.market_data_input import MarketDataInput
+from utils.checkpoint_manager import CheckpointManager
+from monitoring.scaling_monitor import ScalingMonitor
 
 
-# ============================================================================
-# Mock Components for Testing
-# ============================================================================
-
-class MockAttentionLearningLayer:
-    """Mock Attention Layer for testing warmup"""
+class TestWarmupIntegration:
+    """Test system warmup and initialization phase"""
     
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {}
-        self.phase = "learning"
-        self.total_observations = 0
-        self.feature_importance = {}
-        self.temporal_patterns = {}
-        self.regime_patterns = {}
-        self.warmup_loaded = False
-        self.warmup_state = None
-        
-    async def _load_warmup_state(self, filepath: str) -> bool:
-        """Load warmup state from file"""
-        try:
-            with open(filepath, 'r') as f:
-                data = json.load(f)
-                
-            if 'attention_state' in data:
-                state = data['attention_state']
-                self.phase = state.get('phase', 'learning')
-                self.total_observations = state.get('total_observations', 0)
-                self.feature_importance = state.get('feature_importance', {})
-                self.temporal_patterns = state.get('temporal_patterns', {})
-                self.regime_patterns = state.get('regime_patterns', {})
-                self.warmup_loaded = True
-                self.warmup_state = state
-                
-                logger.info(f"Loaded warmup state: {self.total_observations} observations")
-                return True
-                
-        except Exception as e:
-            logger.error(f"Failed to load warmup state: {e}")
-            return False
-            
-    def get_learning_progress(self) -> float:
-        """Get learning progress percentage"""
-        thresholds = {
-            'learning': 2000,
-            'shadow': 500,
-            'active': 200
+    @pytest.fixture
+    async def warmup_system(self):
+        """Create warmup system with all components"""
+        config = {
+            'symbol': 'BTC/USDT',
+            'timeframe': '5m',
+            'warmup_periods': 1000,
+            'min_data_quality': 0.95,
+            'required_history_days': 30,
+            'model_validation_threshold': 0.8,
+            'component_timeout': 30,
+            'parallel_init': True
         }
         
-        if self.phase == 'active':
-            return 1.0
-        elif self.phase == 'shadow':
-            return 0.7 + 0.3 * min(self.total_observations / thresholds['active'], 1.0)
-        else:
-            return min(self.total_observations / thresholds['learning'], 0.7)
-            
-    async def process(self, features: Dict[str, float], regime: str, context: Dict[str, Any]):
-        """Process features with attention"""
-        self.total_observations += 1
-        
-        # Update feature importance
-        for feature, value in features.items():
-            if feature not in self.feature_importance:
-                self.feature_importance[feature] = 0.5
-            # Simple learning simulation
-            self.feature_importance[feature] *= 0.99
-            self.feature_importance[feature] += 0.01 * abs(value)
-            
-        # Check phase transitions
-        if self.phase == 'learning' and self.total_observations >= 2000:
-            self.phase = 'shadow'
-        elif self.phase == 'shadow' and self.total_observations >= 2500:
-            self.phase = 'active'
-            
-        return {
-            'weighted_features': features,  # Simplified
-            'phase': self.phase,
-            'confidence': self.get_learning_progress()
+        components = {
+            'warmup_manager': WarmupManager(config),
+            'data_loader': HistoricalDataLoader(config),
+            'model_loader': ModelLoader(config),
+            'attention_system': AttentionLearningSystem(config),
+            'regime_detector': MarketRegimeDetector(config),
+            'grid_manager': GridStrategyManager(config),
+            'risk_manager': RiskManager(config),
+            'health_checker': HealthChecker(config)
         }
-
-
-class MockGridSystem:
-    """Mock Grid System for testing"""
+        
+        return components, config
     
-    def __init__(self):
-        self.components = {
-            'attention': MockAttentionLearningLayer(),
-            'market_data': MockMarketData(),
-            'features': MockFeatureEngineering(),
-            'regime_detector': MockRegimeDetector()
-        }
-        self.initialized = False
+    @pytest.mark.asyncio
+    async def test_warmup_sequence(self, warmup_system):
+        """Test complete warmup sequence"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
         
-    async def initialize(self):
-        """Initialize system"""
-        self.initialized = True
-        logger.info("Mock Grid System initialized")
+        # Track warmup stages
+        warmup_stages = []
         
-    async def process_tick(self, tick: Dict[str, Any]):
-        """Process a market tick"""
-        # Update market data
-        await self.components['market_data'].update_buffer(tick)
-        
-        # Extract features
-        features = await self.components['features'].extract_features()
-        
-        if features:
-            # Detect regime
-            regime, confidence = await self.components['regime_detector'].detect_regime(
-                features.features
-            )
-            
-            # Process with attention
-            result = await self.components['attention'].process(
-                features.features,
-                regime,
-                {'timestamp': tick['timestamp']}
-            )
-            
-            return result
-            
-        return None
-
-
-class MockMarketData:
-    """Mock market data component"""
-    
-    def __init__(self):
-        self.buffer = []
-        
-    async def update_buffer(self, tick: Dict[str, Any]):
-        """Update data buffer"""
-        self.buffer.append(tick)
-        if len(self.buffer) > 1000:
-            self.buffer.pop(0)
-
-
-class MockFeatureEngineering:
-    """Mock feature engineering"""
-    
-    def __init__(self):
-        self.call_count = 0
-        
-    async def extract_features(self):
-        """Extract features from market data"""
-        self.call_count += 1
-        
-        # Return features every 5 calls (simulating 5-second intervals)
-        if self.call_count % 5 == 0:
-            return type('FeatureResult', (), {
-                'features': {
-                    'volatility_5m': 0.001 + np.random.rand() * 0.001,
-                    'trend_strength': np.random.rand() * 2 - 1,
-                    'volume_ratio': 0.8 + np.random.rand() * 0.4,
-                    'rsi_14': np.random.rand()
-                }
+        async def stage_tracker(stage_name, status):
+            warmup_stages.append({
+                'stage': stage_name,
+                'status': status,
+                'timestamp': datetime.now()
             })
-        return None
-
-
-class MockRegimeDetector:
-    """Mock regime detector"""
-    
-    async def detect_regime(self, features: Dict[str, float]):
-        """Detect market regime"""
-        volatility = features.get('volatility_5m', 0.001)
         
-        if volatility > 0.002:
-            return 'volatile', 0.8
-        elif volatility < 0.0008:
-            return 'ranging', 0.9
-        else:
-            return 'trending', 0.7
-
-
-# ============================================================================
-# Warmup Test Functions
-# ============================================================================
-
-def create_warmup_state(observations: int = 150000) -> Dict[str, Any]:
-    """Create a warmup state file"""
-    return {
-        'version': '1.0',
-        'timestamp': time.time(),
-        'metadata': {
-            'total_ticks_processed': observations * 5,
-            'total_features_extracted': observations,
-            'learning_phases_completed': ['learning', 'shadow', 'active'],
-            'training_duration_hours': 48,
-            'final_learning_progress': 0.95
-        },
-        'attention_state': {
-            'phase': 'active',
-            'total_observations': observations,
-            'feature_importance': {
-                'volatility_5m': 0.812,
-                'volatility_20m': 0.723,
-                'trend_strength': 0.891,
-                'volume_ratio': 0.534,
-                'price_momentum': 0.445,
-                'rsi_14': 0.623,
-                'spread_bps': 0.234
+        warmup_manager.on_stage_complete = stage_tracker
+        
+        # Mock historical data
+        historical_data = self._generate_historical_data(config['warmup_periods'])
+        
+        with patch.object(components['data_loader'], 'load_historical_data', new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = historical_data
+            
+            # Execute warmup
+            warmup_result = await warmup_manager.execute_warmup()
+            
+            assert warmup_result['success']
+            assert warmup_result['ready_for_trading']
+            
+            # Verify all stages completed
+            expected_stages = [
+                'data_loading',
+                'data_validation',
+                'model_initialization',
+                'component_warmup',
+                'system_validation',
+                'final_checks'
+            ]
+            
+            completed_stages = [s['stage'] for s in warmup_stages if s['status'] == 'completed']
+            for stage in expected_stages:
+                assert stage in completed_stages
+    
+    @pytest.mark.asyncio
+    async def test_historical_data_loading_and_validation(self, warmup_system):
+        """Test historical data loading during warmup"""
+        components, config = warmup_system
+        data_loader = components['data_loader']
+        
+        # Test different data scenarios
+        scenarios = [
+            {
+                'name': 'complete_data',
+                'data': self._generate_historical_data(1000),
+                'expected_result': 'success'
             },
-            'temporal_patterns': {
-                'decay_rate': 0.995,
-                'window_size': 1000,
-                'learned_cycles': [300, 900, 3600]
+            {
+                'name': 'insufficient_data',
+                'data': self._generate_historical_data(100),  # Too little
+                'expected_result': 'insufficient_data'
             },
-            'regime_patterns': {
-                'trending': {
-                    'observations': 45000,
-                    'key_features': ['trend_strength', 'price_momentum'],
-                    'avg_importance': 0.85
-                },
-                'ranging': {
-                    'observations': 60000,
-                    'key_features': ['volatility_5m', 'rsi_14'],
-                    'avg_importance': 0.75
-                },
-                'volatile': {
-                    'observations': 30000,
-                    'key_features': ['volatility_20m', 'volume_ratio'],
-                    'avg_importance': 0.80
-                },
-                'breakout': {
-                    'observations': 15000,
-                    'key_features': ['volume_ratio', 'trend_strength'],
-                    'avg_importance': 0.90
-                }
+            {
+                'name': 'gaps_in_data',
+                'data': self._generate_data_with_gaps(1000),
+                'expected_result': 'data_gaps'
             }
-        },
-        'performance_metrics': {
-            'learning_curve': {
-                'milestones': [
-                    {'observations': 1000, 'accuracy': 0.65},
-                    {'observations': 5000, 'accuracy': 0.75},
-                    {'observations': 20000, 'accuracy': 0.82},
-                    {'observations': 50000, 'accuracy': 0.88},
-                    {'observations': 100000, 'accuracy': 0.92},
-                    {'observations': 150000, 'accuracy': 0.95}
-                ]
-            }
-        }
-    }
-
-
-async def test_warmup_loading():
-    """Test loading warmup state"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST: Warmup State Loading")
-    logger.info("="*60)
-    
-    # Create test warmup state
-    warmup_state = create_warmup_state()
-    
-    # Save to temp file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(warmup_state, f, indent=2)
-        temp_file = f.name
+        ]
         
-    try:
-        # Test loading in attention layer
-        attention = MockAttentionLearningLayer()
-        
-        # Before loading
-        logger.info(f"Before warmup - Phase: {attention.phase}, Observations: {attention.total_observations}")
-        assert attention.phase == "learning"
-        assert attention.total_observations == 0
-        
-        # Load warmup
-        success = await attention._load_warmup_state(temp_file)
-        assert success is True
-        
-        # After loading
-        logger.info(f"After warmup - Phase: {attention.phase}, Observations: {attention.total_observations}")
-        assert attention.phase == "active"
-        assert attention.total_observations == 150000
-        assert attention.warmup_loaded is True
-        
-        # Check feature importance loaded
-        assert len(attention.feature_importance) > 0
-        assert 'volatility_5m' in attention.feature_importance
-        
-        logger.info("✅ Warmup loading test PASSED")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Warmup loading test FAILED: {e}")
-        return False
-        
-    finally:
-        Path(temp_file).unlink(missing_ok=True)
-
-
-async def test_accelerated_learning():
-    """Test that warmup accelerates learning"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST: Accelerated Learning with Warmup")
-    logger.info("="*60)
-    
-    # System 1: Without warmup
-    system1 = MockGridSystem()
-    await system1.initialize()
-    
-    # System 2: With warmup
-    system2 = MockGridSystem()
-    await system2.initialize()
-    
-    # Load warmup for system 2
-    warmup_state = create_warmup_state()
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(warmup_state, f, indent=2)
-        temp_file = f.name
-        
-    try:
-        await system2.components['attention']._load_warmup_state(temp_file)
-        
-        # Process same number of ticks for both
-        num_ticks = 1000
-        
-        for i in range(num_ticks):
-            tick = {
-                'symbol': 'BTC/USDT',
-                'price': 50000 + np.random.randn() * 100,
-                'volume': 100 + np.random.exponential(50),
-                'timestamp': time.time() + i,
-                'bid': 49995,
-                'ask': 50005
-            }
+        for scenario in scenarios:
+            # Load and validate
+            validation_result = await data_loader.validate_historical_data(scenario['data'])
             
-            await system1.process_tick(tick)
-            await system2.process_tick(tick)
-            
-        # Compare learning progress
-        progress1 = system1.components['attention'].get_learning_progress()
-        progress2 = system2.components['attention'].get_learning_progress()
-        
-        logger.info(f"System 1 (no warmup) - Progress: {progress1:.1%}, Phase: {system1.components['attention'].phase}")
-        logger.info(f"System 2 (with warmup) - Progress: {progress2:.1%}, Phase: {system2.components['attention'].phase}")
-        
-        # System with warmup should be significantly ahead
-        assert progress2 > progress1
-        assert system2.components['attention'].phase == 'active'
-        assert system1.components['attention'].phase == 'learning'
-        
-        logger.info("✅ Accelerated learning test PASSED")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Accelerated learning test FAILED: {e}")
-        return False
-        
-    finally:
-        Path(temp_file).unlink(missing_ok=True)
-
-
-async def test_feature_importance_preservation():
-    """Test that feature importance is preserved"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST: Feature Importance Preservation")
-    logger.info("="*60)
-    
-    # Create warmup with specific feature importance
-    warmup_state = create_warmup_state()
-    original_importance = warmup_state['attention_state']['feature_importance'].copy()
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(warmup_state, f, indent=2)
-        temp_file = f.name
-        
-    try:
-        # Load warmup
-        attention = MockAttentionLearningLayer()
-        await attention._load_warmup_state(temp_file)
-        
-        # Check feature importance preserved
-        for feature, importance in original_importance.items():
-            assert feature in attention.feature_importance
-            assert attention.feature_importance[feature] == importance
-            
-        logger.info("Original importance values:")
-        for feature, value in original_importance.items():
-            logger.info(f"  {feature}: {value:.3f}")
-            
-        logger.info("\nLoaded importance values:")
-        for feature, value in attention.feature_importance.items():
-            logger.info(f"  {feature}: {value:.3f}")
-            
-        logger.info("✅ Feature importance preservation test PASSED")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Feature importance preservation test FAILED: {e}")
-        return False
-        
-    finally:
-        Path(temp_file).unlink(missing_ok=True)
-
-
-async def test_regime_patterns_loading():
-    """Test regime-specific patterns are loaded"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST: Regime Patterns Loading")
-    logger.info("="*60)
-    
-    warmup_state = create_warmup_state()
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(warmup_state, f, indent=2)
-        temp_file = f.name
-        
-    try:
-        attention = MockAttentionLearningLayer()
-        await attention._load_warmup_state(temp_file)
-        
-        # Check regime patterns loaded
-        assert 'regime_patterns' in attention.warmup_state
-        regime_patterns = attention.warmup_state['regime_patterns']
-        
-        expected_regimes = ['trending', 'ranging', 'volatile', 'breakout']
-        for regime in expected_regimes:
-            assert regime in regime_patterns
-            assert 'observations' in regime_patterns[regime]
-            assert 'key_features' in regime_patterns[regime]
-            
-            logger.info(f"\nRegime: {regime}")
-            logger.info(f"  Observations: {regime_patterns[regime]['observations']:,}")
-            logger.info(f"  Key features: {regime_patterns[regime]['key_features']}")
-            
-        logger.info("✅ Regime patterns loading test PASSED")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Regime patterns loading test FAILED: {e}")
-        return False
-        
-    finally:
-        Path(temp_file).unlink(missing_ok=True)
-
-
-async def test_invalid_warmup_handling():
-    """Test handling of invalid warmup files"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST: Invalid Warmup File Handling")
-    logger.info("="*60)
-    
-    test_cases = [
-        {
-            'name': 'Empty file',
-            'content': {}
-        },
-        {
-            'name': 'Missing attention_state',
-            'content': {'version': '1.0', 'timestamp': time.time()}
-        },
-        {
-            'name': 'Invalid JSON',
-            'content': "This is not valid JSON"
-        },
-        {
-            'name': 'Wrong version',
-            'content': {
-                'version': '0.5',
-                'attention_state': {'phase': 'learning'}
-            }
-        }
-    ]
-    
-    for test_case in test_cases:
-        logger.info(f"\nTesting: {test_case['name']}")
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            if test_case['name'] == 'Invalid JSON':
-                f.write(test_case['content'])
+            if scenario['expected_result'] == 'success':
+                assert validation_result['is_valid']
+                assert validation_result['quality_score'] >= config['min_data_quality']
             else:
-                json.dump(test_case['content'], f)
-            temp_file = f.name
+                assert not validation_result['is_valid']
+                assert scenario['expected_result'] in validation_result['issues']
+    
+    @pytest.mark.asyncio
+    async def test_model_initialization_during_warmup(self, warmup_system):
+        """Test ML model loading and validation"""
+        components, config = warmup_system
+        model_loader = components['model_loader']
+        attention_system = components['attention_system']
+        
+        # Mock model files
+        model_artifacts = {
+            'attention_weights': self._create_mock_model_weights(),
+            'regime_classifier': self._create_mock_classifier(),
+            'risk_model': self._create_mock_risk_model()
+        }
+        
+        with patch.object(model_loader, 'load_model_artifacts', new_callable=AsyncMock) as mock_load:
+            mock_load.return_value = model_artifacts
             
+            # Initialize models
+            init_result = await model_loader.initialize_models()
+            
+            assert init_result['success']
+            assert all(init_result['models_loaded'].values())
+            
+            # Validate model performance
+            test_data = self._generate_historical_data(100)
+            validation_result = await attention_system.validate_model(test_data)
+            
+            assert validation_result['accuracy'] >= config['model_validation_threshold']
+    
+    @pytest.mark.asyncio
+    async def test_component_warmup_dependencies(self, warmup_system):
+        """Test component initialization with dependencies"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
+        
+        # Define component dependencies
+        dependencies = {
+            'attention_system': ['data_loader'],
+            'regime_detector': ['data_loader', 'attention_system'],
+            'grid_manager': ['regime_detector'],
+            'risk_manager': ['data_loader']
+        }
+        
+        # Track initialization order
+        init_order = []
+        
+        async def track_init(component_name):
+            init_order.append(component_name)
+            await asyncio.sleep(0.01)  # Simulate init time
+        
+        # Mock component initialization
+        for comp_name in dependencies:
+            if comp_name in components:
+                components[comp_name].initialize = lambda n=comp_name: track_init(n)
+        
+        # Execute warmup with dependencies
+        await warmup_manager.warmup_components_with_dependencies(dependencies)
+        
+        # Verify dependency order
+        for comp, deps in dependencies.items():
+            comp_idx = init_order.index(comp) if comp in init_order else -1
+            for dep in deps:
+                dep_idx = init_order.index(dep) if dep in init_order else -1
+                if comp_idx >= 0 and dep_idx >= 0:
+                    assert dep_idx < comp_idx, f"{dep} should initialize before {comp}"
+    
+    @pytest.mark.asyncio
+    async def test_parallel_component_warmup(self, warmup_system):
+        """Test parallel initialization of independent components"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
+        
+        # Components that can initialize in parallel
+        parallel_components = ['attention_system', 'risk_manager', 'health_checker']
+        
+        # Track timing
+        init_times = {}
+        
+        async def timed_init(component_name):
+            start = datetime.now()
+            await asyncio.sleep(0.1)  # Simulate init time
+            end = datetime.now()
+            init_times[component_name] = (start, end)
+        
+        # Mock initialization
+        for comp_name in parallel_components:
+            if comp_name in components:
+                components[comp_name].initialize = lambda n=comp_name: timed_init(n)
+        
+        # Execute parallel warmup
+        start_time = datetime.now()
+        await warmup_manager.parallel_warmup(parallel_components)
+        total_time = (datetime.now() - start_time).total_seconds()
+        
+        # Verify parallel execution
+        # If sequential, would take 0.3s (3 * 0.1s)
+        # If parallel, should take ~0.1s
+        assert total_time < 0.2  # Allow some overhead
+        
+        # Check overlap in execution times
+        for i, comp1 in enumerate(parallel_components):
+            for comp2 in parallel_components[i+1:]:
+                if comp1 in init_times and comp2 in init_times:
+                    # Check if execution overlapped
+                    start1, end1 = init_times[comp1]
+                    start2, end2 = init_times[comp2]
+                    
+                    overlap = (min(end1, end2) - max(start1, start2)).total_seconds()
+                    assert overlap > 0, f"{comp1} and {comp2} should run in parallel"
+    
+    @pytest.mark.asyncio
+    async def test_warmup_health_checks(self, warmup_system):
+        """Test system health validation during warmup"""
+        components, config = warmup_system
+        health_checker = components['health_checker']
+        
+        # Define health check criteria
+        health_checks = {
+            'memory_usage': lambda: {'status': 'healthy', 'value': 45, 'threshold': 80},
+            'cpu_usage': lambda: {'status': 'healthy', 'value': 30, 'threshold': 70},
+            'disk_space': lambda: {'status': 'healthy', 'value': 60, 'threshold': 90},
+            'network_latency': lambda: {'status': 'healthy', 'value': 10, 'threshold': 100},
+            'api_connectivity': lambda: {'status': 'healthy', 'connected': True}
+        }
+        
+        # Run health checks
+        health_results = {}
+        for check_name, check_func in health_checks.items():
+            result = await health_checker.run_check(check_name, check_func)
+            health_results[check_name] = result
+        
+        # All should be healthy
+        assert all(r['status'] == 'healthy' for r in health_results.values())
+        
+        # Test with unhealthy condition
+        health_checks['memory_usage'] = lambda: {'status': 'unhealthy', 'value': 85, 'threshold': 80}
+        
+        with pytest.raises(RuntimeError, match="Health check failed"):
+            await health_checker.validate_system_health(health_checks)
+    
+    @pytest.mark.asyncio
+    async def test_warmup_state_persistence(self, warmup_system):
+        """Test saving and loading warmup state"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
+        
+        # Create warmup state
+        warmup_state = {
+            'timestamp': datetime.now(),
+            'components_initialized': {
+                'attention_system': True,
+                'regime_detector': True,
+                'grid_manager': True,
+                'risk_manager': True
+            },
+            'data_loaded': {
+                'historical_periods': 1000,
+                'quality_score': 0.97,
+                'last_timestamp': datetime.now() - timedelta(minutes=5)
+            },
+            'models_loaded': {
+                'attention_model': 'v2.1.0',
+                'regime_model': 'v1.5.2',
+                'risk_model': 'v3.0.1'
+            },
+            'validation_results': {
+                'data_validation': 'passed',
+                'model_validation': 'passed',
+                'system_validation': 'passed'
+            }
+        }
+        
+        # Save state
+        await warmup_manager.save_warmup_state(warmup_state)
+        
+        # Load state
+        loaded_state = await warmup_manager.load_warmup_state()
+        
+        assert loaded_state is not None
+        assert loaded_state['components_initialized'] == warmup_state['components_initialized']
+        assert loaded_state['models_loaded'] == warmup_state['models_loaded']
+        
+        # Test resume from saved state
+        can_resume = await warmup_manager.can_resume_from_state(loaded_state)
+        assert can_resume
+    
+    @pytest.mark.asyncio
+    async def test_warmup_recovery_mechanisms(self, warmup_system):
+        """Test recovery from warmup failures"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
+        
+        # Simulate failures at different stages
+        failure_scenarios = [
+            {
+                'stage': 'data_loading',
+                'error': ConnectionError("Failed to connect to data source"),
+                'recovery': 'retry_with_backup'
+            },
+            {
+                'stage': 'model_initialization',
+                'error': FileNotFoundError("Model file not found"),
+                'recovery': 'use_default_model'
+            },
+            {
+                'stage': 'component_warmup',
+                'error': TimeoutError("Component initialization timeout"),
+                'recovery': 'restart_component'
+            }
+        ]
+        
+        for scenario in failure_scenarios:
+            # Inject failure
+            with patch.object(warmup_manager, f'_execute_{scenario["stage"]}', side_effect=scenario['error']):
+                
+                # Attempt warmup with recovery
+                recovery_result = await warmup_manager.warmup_with_recovery()
+                
+                # Should recover based on scenario
+                if scenario['recovery'] == 'retry_with_backup':
+                    assert recovery_result['recovered']
+                    assert recovery_result['used_backup']
+                elif scenario['recovery'] == 'use_default_model':
+                    assert recovery_result['recovered']
+                    assert recovery_result['using_defaults']
+                elif scenario['recovery'] == 'restart_component':
+                    assert recovery_result['recovered']
+                    assert recovery_result['components_restarted'] > 0
+    
+    @pytest.mark.asyncio
+    async def test_gradual_warmup_with_live_data(self, warmup_system):
+        """Test gradual transition from historical to live data"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
+        
+        # Historical data
+        historical_data = self._generate_historical_data(1000)
+        
+        # Simulate live data stream
+        live_data_buffer = []
+        
+        async def simulate_live_data():
+            """Generate live data points"""
+            base_price = historical_data['close'].iloc[-1]
+            for i in range(20):
+                new_point = {
+                    'timestamp': datetime.now(),
+                    'close': base_price * (1 + np.random.normal(0, 0.001)),
+                    'volume': np.random.uniform(50, 150)
+                }
+                live_data_buffer.append(new_point)
+                await asyncio.sleep(0.05)
+        
+        # Start gradual warmup
+        warmup_task = asyncio.create_task(
+            warmup_manager.gradual_warmup(historical_data)
+        )
+        
+        # Start live data
+        live_task = asyncio.create_task(simulate_live_data())
+        
+        # Wait for both
+        await asyncio.gather(warmup_task, live_task)
+        
+        # Verify smooth transition
+        warmup_result = warmup_task.result()
+        assert warmup_result['success']
+        assert warmup_result['live_data_integrated']
+        assert len(warmup_result['transition_metrics']) > 0
+        
+        # Check data continuity
+        last_historical = historical_data['close'].iloc[-1]
+        first_live = live_data_buffer[0]['close']
+        price_gap = abs(first_live - last_historical) / last_historical
+        assert price_gap < 0.01  # Less than 1% gap
+    
+    @pytest.mark.asyncio
+    async def test_warmup_performance_benchmarks(self, warmup_system):
+        """Test warmup meets performance requirements"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
+        
+        # Performance requirements
+        requirements = {
+            'total_warmup_time': 60,  # seconds
+            'data_loading_time': 10,
+            'model_init_time': 5,
+            'component_warmup_time': 20,
+            'memory_usage_mb': 500,
+            'cpu_usage_percent': 80
+        }
+        
+        # Track metrics
+        metrics = {
+            'start_time': datetime.now(),
+            'stage_times': {},
+            'resource_usage': {}
+        }
+        
+        # Mock resource monitoring
+        async def monitor_resources():
+            while True:
+                metrics['resource_usage']['memory_mb'] = np.random.uniform(200, 400)
+                metrics['resource_usage']['cpu_percent'] = np.random.uniform(30, 60)
+                await asyncio.sleep(1)
+        
+        # Start monitoring
+        monitor_task = asyncio.create_task(monitor_resources())
+        
         try:
-            attention = MockAttentionLearningLayer()
-            result = await attention._load_warmup_state(temp_file)
+            # Execute warmup with timing
+            stages = ['data_loading', 'model_initialization', 'component_warmup']
             
-            # Should handle gracefully
-            assert result is False or attention.warmup_loaded is False
-            logger.info(f"  ✅ Handled gracefully")
+            for stage in stages:
+                stage_start = datetime.now()
+                
+                # Simulate stage execution
+                await asyncio.sleep(np.random.uniform(1, 3))
+                
+                stage_end = datetime.now()
+                metrics['stage_times'][stage] = (stage_end - stage_start).total_seconds()
             
-        except Exception as e:
-            logger.error(f"  ❌ Unexpected error: {e}")
-            return False
+            # Total time
+            total_time = (datetime.now() - metrics['start_time']).total_seconds()
+            
+            # Verify performance
+            assert total_time < requirements['total_warmup_time']
+            
+            for stage, max_time in [
+                ('data_loading', requirements['data_loading_time']),
+                ('model_initialization', requirements['model_init_time']),
+                ('component_warmup', requirements['component_warmup_time'])
+            ]:
+                if stage in metrics['stage_times']:
+                    assert metrics['stage_times'][stage] < max_time
+            
+            # Check resource usage
+            max_memory = max(metrics['resource_usage'].get('memory_mb', [0]))
+            max_cpu = max(metrics['resource_usage'].get('cpu_percent', [0]))
+            
+            assert max_memory < requirements['memory_usage_mb']
+            assert max_cpu < requirements['cpu_usage_percent']
             
         finally:
-            Path(temp_file).unlink(missing_ok=True)
-            
-    logger.info("\n✅ Invalid warmup handling test PASSED")
-    return True
-
-
-async def test_performance_comparison():
-    """Test performance metrics with and without warmup"""
-    logger.info("\n" + "="*60)
-    logger.info("TEST: Performance Metrics Comparison")
-    logger.info("="*60)
+            monitor_task.cancel()
     
-    # Create warmup state
-    warmup_state = create_warmup_state()
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(warmup_state, f, indent=2)
-        temp_file = f.name
+    @pytest.mark.asyncio
+    async def test_warmup_configuration_validation(self, warmup_system):
+        """Test configuration validation during warmup"""
+        components, config = warmup_system
+        warmup_manager = components['warmup_manager']
         
-    try:
-        # System without warmup
-        system_cold = MockGridSystem()
-        await system_cold.initialize()
-        
-        # System with warmup
-        system_warm = MockGridSystem()
-        await system_warm.initialize()
-        await system_warm.components['attention']._load_warmup_state(temp_file)
-        
-        # Metrics to track
-        metrics = {
-            'cold': {
-                'phase_transitions': [],
-                'observations_to_shadow': None,
-                'observations_to_active': None
+        # Test various configurations
+        test_configs = [
+            {
+                'name': 'valid_config',
+                'config': config,
+                'expected': 'valid'
             },
-            'warm': {
-                'phase_transitions': [],
-                'started_in_phase': system_warm.components['attention'].phase
+            {
+                'name': 'missing_required',
+                'config': {**config, 'symbol': None},
+                'expected': 'invalid'
+            },
+            {
+                'name': 'invalid_values',
+                'config': {**config, 'warmup_periods': -100},
+                'expected': 'invalid'
+            },
+            {
+                'name': 'incompatible_settings',
+                'config': {**config, 'timeframe': '1s', 'warmup_periods': 1000000},
+                'expected': 'warning'
             }
+        ]
+        
+        for test in test_configs:
+            validation_result = await warmup_manager.validate_configuration(test['config'])
+            
+            if test['expected'] == 'valid':
+                assert validation_result['is_valid']
+                assert len(validation_result['errors']) == 0
+            elif test['expected'] == 'invalid':
+                assert not validation_result['is_valid']
+                assert len(validation_result['errors']) > 0
+            elif test['expected'] == 'warning':
+                assert validation_result['is_valid']
+                assert len(validation_result['warnings']) > 0
+    
+    # Helper methods
+    def _generate_historical_data(self, periods: int) -> pd.DataFrame:
+        """Generate historical market data"""
+        end_time = datetime.now()
+        dates = pd.date_range(end=end_time, periods=periods, freq='5min')
+        
+        # Generate realistic price movement
+        price = 50000
+        prices = []
+        volumes = []
+        
+        for i in range(periods):
+            # Add trend and noise
+            trend = 0.00001 * i  # Slight upward trend
+            noise = np.random.normal(0, 0.001)
+            price *= (1 + trend + noise)
+            prices.append(price)
+            
+            # Volume with daily pattern
+            hour = dates[i].hour
+            base_volume = 100
+            daily_pattern = 1 + 0.5 * np.sin(2 * np.pi * hour / 24)
+            volume = base_volume * daily_pattern * np.random.uniform(0.8, 1.2)
+            volumes.append(volume)
+        
+        return pd.DataFrame({
+            'timestamp': dates,
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
+            'close': prices,
+            'volume': volumes
+        })
+    
+    def _generate_data_with_gaps(self, periods: int) -> pd.DataFrame:
+        """Generate data with gaps"""
+        data = self._generate_historical_data(periods)
+        
+        # Remove random chunks
+        gap_starts = [200, 500, 800]
+        gap_size = 20
+        
+        for start in gap_starts:
+            if start + gap_size < len(data):
+                data = data.drop(data.index[start:start+gap_size])
+        
+        return data.reset_index(drop=True)
+    
+    def _create_mock_model_weights(self) -> Dict[str, np.ndarray]:
+        """Create mock model weights"""
+        return {
+            'attention_weights': np.random.randn(100, 100),
+            'output_weights': np.random.randn(100, 10),
+            'bias': np.random.randn(10)
         }
-        
-        # Process ticks and track progress
-        for i in range(3000):
-            tick = {
-                'symbol': 'BTC/USDT',
-                'price': 50000 + np.random.randn() * 100,
-                'volume': 100,
-                'timestamp': time.time() + i,
-                'bid': 49995,
-                'ask': 50005
-            }
-            
-            # Track cold system
-            prev_phase_cold = system_cold.components['attention'].phase
-            await system_cold.process_tick(tick)
-            curr_phase_cold = system_cold.components['attention'].phase
-            
-            if prev_phase_cold != curr_phase_cold:
-                metrics['cold']['phase_transitions'].append({
-                    'from': prev_phase_cold,
-                    'to': curr_phase_cold,
-                    'at_observation': system_cold.components['attention'].total_observations
-                })
-                
-                if curr_phase_cold == 'shadow':
-                    metrics['cold']['observations_to_shadow'] = system_cold.components['attention'].total_observations
-                elif curr_phase_cold == 'active':
-                    metrics['cold']['observations_to_active'] = system_cold.components['attention'].total_observations
-                    
-            # Track warm system (should stay in active)
-            await system_warm.process_tick(tick)
-            
-        # Compare results
-        logger.info("\nCold Start System:")
-        logger.info(f"  Final phase: {system_cold.components['attention'].phase}")
-        logger.info(f"  Observations to shadow: {metrics['cold']['observations_to_shadow']}")
-        logger.info(f"  Observations to active: {metrics['cold']['observations_to_active']}")
-        
-        logger.info("\nWarm Start System:")
-        logger.info(f"  Started in phase: {metrics['warm']['started_in_phase']}")
-        logger.info(f"  Final phase: {system_warm.components['attention'].phase}")
-        logger.info(f"  Total observations: {system_warm.components['attention'].total_observations}")
-        
-        # Warm system should be way ahead
-        assert system_warm.components['attention'].phase == 'active'
-        assert system_cold.components['attention'].phase in ['learning', 'shadow']
-        
-        # Calculate acceleration factor
-        if metrics['cold']['observations_to_shadow']:
-            acceleration = 2000 / metrics['cold']['observations_to_shadow']
-            logger.info(f"\nAcceleration factor: {acceleration:.1f}x faster to reach shadow phase")
-            
-        logger.info("✅ Performance comparison test PASSED")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Performance comparison test FAILED: {e}")
-        return False
-        
-    finally:
-        Path(temp_file).unlink(missing_ok=True)
-
-
-# ============================================================================
-# Integration Test Suite
-# ============================================================================
-
-async def run_warmup_integration_tests():
-    """Run all warmup integration tests"""
-    logger.info("\n" + "="*80)
-    logger.info("GRIDATTENTION WARMUP INTEGRATION TEST SUITE")
-    logger.info("="*80)
     
-    tests = [
-        ("Warmup State Loading", test_warmup_loading),
-        ("Accelerated Learning", test_accelerated_learning),
-        ("Feature Importance Preservation", test_feature_importance_preservation),
-        ("Regime Patterns Loading", test_regime_patterns_loading),
-        ("Invalid Warmup Handling", test_invalid_warmup_handling),
-        ("Performance Comparison", test_performance_comparison)
-    ]
+    def _create_mock_classifier(self) -> Dict[str, Any]:
+        """Create mock classifier model"""
+        return {
+            'model_type': 'random_forest',
+            'n_estimators': 100,
+            'max_depth': 10,
+            'feature_importances': np.random.rand(50)
+        }
     
-    results = []
-    
-    for test_name, test_func in tests:
-        try:
-            result = await test_func()
-            results.append((test_name, result))
-        except Exception as e:
-            logger.error(f"Test {test_name} crashed: {e}")
-            results.append((test_name, False))
-            
-    # Summary
-    logger.info("\n" + "="*80)
-    logger.info("TEST SUMMARY")
-    logger.info("="*80)
-    
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-    
-    for test_name, result in results:
-        status = "✅ PASSED" if result else "❌ FAILED"
-        logger.info(f"{test_name:<40} {status}")
-        
-    logger.info(f"\nTotal: {passed}/{total} tests passed ({passed/total*100:.1f}%)")
-    
-    if passed == total:
-        logger.info("\n🎉 All warmup integration tests passed!")
-        logger.info("The warmup system is working correctly.")
-    else:
-        logger.error(f"\n❌ {total - passed} tests failed.")
-        
-    return passed == total
-
-
-# ============================================================================
-# Example Usage Documentation
-# ============================================================================
-
-def print_usage_guide():
-    """Print usage guide for warmup system"""
-    guide = """
-    ============================================================================
-    GRIDATTENTION WARMUP SYSTEM USAGE GUIDE
-    ============================================================================
-    
-    1. GENERATE WARMUP STATE (from historical data):
-       
-       # In your Jupyter notebook or script:
-       from warmup_main import run_complete_warmup
-       
-       await run_complete_warmup(
-           data_file_path="historical_data.pkl",
-           sample_size=1000000,  # Use 1M samples for warmup
-           target_observations=150000  # Target 150k observations
-       )
-       
-       # This will create 'attention_warmup_state.json'
-    
-    2. USE WARMUP STATE IN PRODUCTION:
-       
-       # Copy attention_warmup_state.json to your GridAttention root directory
-       # The system will automatically detect and load it on startup
-       
-       # In main.py, the AttentionLearningLayer will:
-       # 1. Check for warmup file on initialization
-       # 2. Load pre-trained state if found
-       # 3. Start in 'active' phase instead of 'learning'
-    
-    3. BENEFITS:
-       
-       - Skip 2000 observations learning phase → Start immediately
-       - Skip 500 observations shadow phase → Go live faster  
-       - Pre-trained feature importance → Better decisions from start
-       - Regime-specific patterns → Accurate market detection
-       - 3-10x faster time to production readiness
-    
-    4. MONITORING:
-       
-       # Check if warmup was loaded:
-       if system.components['attention'].warmup_loaded:
-           print("System started with warmup acceleration!")
-       
-       # Check learning progress:
-       progress = system.components['attention'].get_learning_progress()
-       print(f"Learning progress: {progress:.1%}")
-    
-    ============================================================================
-    """
-    
-    print(guide)
-
-
-# ============================================================================
-# Main Execution
-# ============================================================================
-
-if __name__ == "__main__":
-    # Print usage guide
-    print_usage_guide()
-    
-    # Run tests
-    success = asyncio.run(run_warmup_integration_tests())
-    
-    # Exit with appropriate code
-    exit(0 if success else 1)
+    def _create_mock_risk_model(self) -> Dict[str, Any]:
+        """Create mock risk model"""
+        return {
+            'risk_factors': ['volatility', 'correlation', 'drawdown'],
+            'factor_weights': [0.4, 0.3, 0.3],
+            'thresholds': {'max_var': 0.02, 'max_drawdown': 0.1}
+        }

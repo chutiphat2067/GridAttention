@@ -22,8 +22,8 @@ from typing import List, Dict, Optional
 import asyncio
 from dataclasses import dataclass
 
-# Assuming the module structure
-from src.core.performance_monitor import (
+# GridAttention project imports
+from core.performance_monitor import (
     PerformanceMonitor,
     PerformanceConfig,
     Trade,

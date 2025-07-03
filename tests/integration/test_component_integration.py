@@ -1,881 +1,386 @@
-# tests/test_integration.py
-"""
-Integration tests for the complete grid trading system
-Tests component interactions and end-to-end workflows
+# tests/integration/test_component_integration.py
 
-Author: Grid Trading System
-Date: 2024
-"""
-
+import pytest
 import asyncio
-import unittest
-from unittest.mock import Mock, patch, AsyncMock, MagicMock
+from unittest.mock import Mock, AsyncMock, patch
+from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Any
-import time
-from datetime import datetime, timedelta
-import tempfile
-import shutil
-import os
 
-# Import all system components
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from data.market_data_input import MarketDataInput, MarketTick
-from data.feature_engineering_pipeline import FeatureEngineeringPipeline
-from core.attention_learning_layer import AttentionLearningLayer, AttentionPhase
-from core.market_regime_detector import MarketRegimeDetector, MarketRegime
+from core.attention_learning_layer import AttentionLearningLayer
+from core.market_regime_detector import MarketRegimeDetector
 from core.grid_strategy_selector import GridStrategySelector
 from core.risk_management_system import RiskManagementSystem
 from core.execution_engine import ExecutionEngine
 from core.performance_monitor import PerformanceMonitor
 from core.feedback_loop import FeedbackLoop
-from core.overfitting_detector import OverfittingDetector
-from utils.checkpoint_manager import CheckpointManager
-from data.data_augmentation import MarketDataAugmenter, AugmentationConfig
 
 
-class TestSystemIntegration(unittest.TestCase):
-    """Test full system integration"""
+class TestComponentIntegration:
+    """Test integration between major system components"""
     
-    @classmethod
-    def setUpClass(cls):
-        """Set up test environment"""
-        cls.temp_dir = tempfile.mkdtemp()
-        cls.config = {
-            'market_data': {
-                'symbols': ['BTCUSDT'],
-                'exchanges': ['binance'],
-                'buffer_size': 1000
-            },
-            'features': {
-                'cache_size': 100,
-                'extractors': ['price', 'volume', 'volatility']
-            },
-            'attention': {
-                'min_trades_learning': 100,
-                'min_trades_shadow': 50,
-                'min_trades_active': 25
-            },
-            'risk_management': {
-                'max_position_size': 0.05,
-                'max_concurrent_orders': 5,
-                'max_daily_loss': 0.01
-            }
+    @pytest.fixture
+    async def integrated_system(self):
+        """Create an integrated system with all components"""
+        config = {
+            'symbol': 'BTC/USDT',
+            'timeframe': '5m',
+            'max_position_size': 1.0,
+            'risk_per_trade': 0.02,
+            'attention_window': 50,
+            'regime_lookback': 100,
+            'grid_levels': 10,
+            'grid_spacing': 0.001
         }
         
-    @classmethod
-    def tearDownClass(cls):
-        """Clean up test environment"""
-        shutil.rmtree(cls.temp_dir, ignore_errors=True)
-        
-    async def test_data_flow_pipeline(self):
-        """Test data flow through entire pipeline"""
         # Initialize components
-        market_data = MarketDataInput(self.config['market_data'])
-        features = FeatureEngineeringPipeline(self.config['features'])
-        attention = AttentionLearningLayer(self.config['attention'])
-        regime_detector = MarketRegimeDetector()
+        attention_system = AttentionLearningSystem(config)
+        regime_detector = MarketRegimeDetector(config)
+        grid_manager = GridStrategyManager(config)
+        risk_manager = RiskManager(config)
+        execution_engine = ExecutionEngine(config)
+        performance_monitor = PerformanceMonitor(config)
+        feedback_loop = FeedbackLoop(config)
         
-        # Generate test data
-        test_ticks = self._generate_test_ticks(100)
-        
-        # Process through pipeline
-        for tick in test_ticks:
-            # 1. Market data ingestion
-            await market_data.process_tick(tick)
-            
-            # 2. Feature extraction
-            history = await market_data.get_recent_data('BTCUSDT', 50)
-            feature_set = await features.extract_features(history)
-            
-            # 3. Attention processing
-            enhanced_features = await attention.process_market_data(
-                feature_set.features,
-                history
-            )
-            
-            # 4. Regime detection
-            regime, confidence = await regime_detector.detect_regime(enhanced_features)
-            
-            # Verify data flow
-            self.assertIsNotNone(feature_set)
-            self.assertIsNotNone(enhanced_features)
-            self.assertIsInstance(regime, MarketRegime)
-            self.assertGreater(confidence, 0)
-            
-    async def test_trading_decision_flow(self):
-        """Test trading decision making flow"""
-        # Initialize trading components
-        strategy_selector = GridStrategySelector(self.config)
-        risk_manager = RiskManagementSystem(self.config['risk_management'])
-        execution_engine = ExecutionEngine()
-        
-        # Mock market conditions
-        features = {
-            'price': 50000,
-            'volatility_5m': 0.001,
-            'trend_strength': 0.5,
-            'volume_ratio': 1.2
+        # Connect components
+        components = {
+            'attention': attention_system,
+            'regime': regime_detector,
+            'grid': grid_manager,
+            'risk': risk_manager,
+            'execution': execution_engine,
+            'performance': performance_monitor,
+            'feedback': feedback_loop
         }
         
-        regime = MarketRegime.RANGING
+        return components, config
+    
+    @pytest.mark.asyncio
+    async def test_attention_to_regime_integration(self, integrated_system):
+        """Test attention system feeding into regime detector"""
+        components, config = integrated_system
         
-        # 1. Select strategy
-        strategy = await strategy_selector.select_strategy(regime, features)
-        self.assertIsNotNone(strategy)
+        # Generate market data
+        market_data = self._generate_market_data(200)
         
-        # 2. Generate grid levels
-        grid_levels = strategy.calculate_grid_levels(features['price'])
-        self.assertGreater(len(grid_levels), 0)
+        # Process through attention system
+        attention_features = await components['attention'].process_market_data(market_data)
         
-        # 3. Risk check
-        for level in grid_levels[:3]:  # Test first 3 levels
-            order_params = {
-                'symbol': 'BTCUSDT',
-                'side': level.side,
-                'price': level.price,
-                'quantity': level.quantity
-            }
-            
-            risk_check = await risk_manager.check_order_risk(order_params)
-            self.assertIn('approved', risk_check)
-            
+        # Feed to regime detector
+        regime = await components['regime'].detect_regime(
+            market_data, 
+            attention_features=attention_features
+        )
+        
+        assert regime is not None
+        assert regime['type'] in ['trending', 'ranging', 'volatile']
+        assert 'confidence' in regime
+        assert 0 <= regime['confidence'] <= 1
+    
+    @pytest.mark.asyncio
+    async def test_regime_to_grid_strategy_integration(self, integrated_system):
+        """Test regime detector informing grid strategy"""
+        components, config = integrated_system
+        
+        # Generate different market regimes
+        trending_data = self._generate_trending_market(100)
+        ranging_data = self._generate_ranging_market(100)
+        
+        # Test trending regime
+        trending_regime = await components['regime'].detect_regime(trending_data)
+        grid_params_trending = await components['grid'].adjust_for_regime(trending_regime)
+        
+        # Test ranging regime
+        ranging_regime = await components['regime'].detect_regime(ranging_data)
+        grid_params_ranging = await components['grid'].adjust_for_regime(ranging_regime)
+        
+        # Grid should adapt differently
+        assert grid_params_trending['spacing'] != grid_params_ranging['spacing']
+        assert grid_params_trending['levels'] != grid_params_ranging['levels']
+    
+    @pytest.mark.asyncio
+    async def test_grid_to_risk_management_integration(self, integrated_system):
+        """Test grid strategy with risk management constraints"""
+        components, config = integrated_system
+        
+        # Setup grid
+        grid_setup = {
+            'levels': 10,
+            'spacing': 0.001,
+            'center_price': 50000,
+            'size_per_level': 0.1
+        }
+        
+        # Create grid orders
+        grid_orders = await components['grid'].create_grid_orders(grid_setup)
+        
+        # Validate each order through risk management
+        approved_orders = []
+        for order in grid_orders:
+            risk_check = await components['risk'].validate_order(order)
             if risk_check['approved']:
-                # 4. Execute order (mock)
-                with patch.object(execution_engine, '_submit_order', new_callable=AsyncMock) as mock_submit:
-                    mock_submit.return_value = {
-                        'order_id': f'test_{time.time()}',
-                        'status': 'filled'
-                    }
-                    
-                    result = await execution_engine.execute_order(order_params)
-                    self.assertIsNotNone(result)
-                    
-    async def test_learning_feedback_loop(self):
-        """Test learning and feedback mechanisms"""
-        # Initialize learning components
-        attention = AttentionLearningLayer(self.config['attention'])
-        feedback_loop = FeedbackLoop()
-        overfitting_detector = OverfittingDetector()
+                approved_orders.append(order)
         
-        # Simulate trading results
-        for i in range(150):
-            # Generate varying performance
-            if i < 50:
-                # Good performance initially
-                win_rate = 0.65
-                profit = 100
-            elif i < 100:
-                # Degrading performance (overfitting)
-                win_rate = 0.45
-                profit = -50
-            else:
-                # Recovery after adjustment
-                win_rate = 0.55
-                profit = 50
-                
-            # Process feedback
-            trade_result = {
-                'trade_id': f'trade_{i}',
-                'profit': profit,
-                'win': profit > 0,
-                'features': {'volatility': 0.001, 'trend': 0.5}
-            }
-            
-            # Update components
-            await feedback_loop.process_trade_result(trade_result)
-            
-            # Check for overfitting
-            if i % 20 == 0:
-                await overfitting_detector.add_training_result(
-                    win_rate=0.65,
-                    profit_factor=1.5
-                )
-                await overfitting_detector.add_live_result(
-                    win_rate=win_rate,
-                    profit_factor=1.0 + win_rate
-                )
-                
-        # Verify learning occurred
-        self.assertEqual(attention.phase, AttentionPhase.SHADOW)  # Should progress
+        # Some orders should be approved
+        assert len(approved_orders) > 0
+        assert len(approved_orders) <= len(grid_orders)
         
-        # Check overfitting detection
-        detection = await overfitting_detector.detect_overfitting()
-        self.assertTrue(detection['is_overfitting'])
-        
-    async def test_checkpoint_and_recovery(self):
-        """Test checkpoint save/load and recovery"""
-        # Initialize components with checkpoint support
-        checkpoint_manager = CheckpointManager(self.temp_dir)
-        attention = AttentionLearningLayer(self.config['attention'])
-        
-        # Train model
-        for i in range(100):
-            features = {f'feature_{j}': np.random.random() for j in range(5)}
-            await attention.process_market_data(features, [])
-            
-        # Save checkpoint
-        checkpoint_id = await checkpoint_manager.save_checkpoint(
-            model_name='attention_layer',
-            component=attention,
-            performance_metrics={
-                'win_rate': 0.65,
-                'profit_factor': 1.5
-            }
-        )
-        
-        self.assertIsNotNone(checkpoint_id)
-        
-        # Modify model state
-        attention.phase = AttentionPhase.ACTIVE
-        
-        # Load checkpoint
-        success = await checkpoint_manager.load_checkpoint(
-            model_name='attention_layer',
-            component=attention,
-            checkpoint_id=checkpoint_id
-        )
-        
-        self.assertTrue(success)
-        self.assertEqual(attention.phase, AttentionPhase.LEARNING)  # Should be restored
-        
-    async def test_data_augmentation_integration(self):
-        """Test data augmentation in training pipeline"""
-        # Initialize augmenter
-        augmenter = MarketDataAugmenter(AugmentationConfig(
-            noise_level='moderate',
-            max_augmentation_factor=2
-        ))
-        
-        # Generate base data
-        original_ticks = self._generate_test_ticks(100)
-        
-        # Augment data
-        augmented_ticks, metadata = augmenter.augment_market_data(
-            original_ticks,
-            methods=['noise_injection', 'time_warping']
-        )
-        
-        # Verify augmentation
-        self.assertEqual(metadata.original_size, 100)
-        self.assertGreater(metadata.augmented_size, 100)
-        self.assertGreater(metadata.quality_score, 0.8)
-        
-        # Test with feature pipeline
-        features = FeatureEngineeringPipeline(self.config['features'])
-        
-        # Extract features from augmented data
-        for i in range(50, len(augmented_ticks)):
-            window = augmented_ticks[i-50:i]
-            feature_set = await features.extract_features(window)
-            self.assertIsNotNone(feature_set)
-            
-    async def test_monitoring_and_alerts(self):
-        """Test monitoring and alert system"""
-        # Initialize monitoring
-        monitor = PerformanceMonitor()
-        
-        # Mock components
-        mock_components = {
-            'market_data': Mock(),
-            'attention': Mock(get_learning_progress=Mock(return_value=0.5)),
-            'risk_manager': Mock(),
-            'execution_engine': Mock()
-        }
-        
-        await monitor.initialize(mock_components)
-        
-        # Simulate metrics
-        for i in range(10):
-            metrics = {
-                'trades': i * 10,
-                'win_rate': 0.5 + np.random.normal(0, 0.1),
-                'pnl': 1000 + i * 100,
-                'cpu_usage': 50 + np.random.normal(0, 10),
-                'memory_usage': 60 + np.random.normal(0, 5)
-            }
-            
-            await monitor.update_metrics(metrics)
-            
-        # Check alerts
-        alerts = await monitor.get_active_alerts()
-        self.assertIsInstance(alerts, list)
-        
-        # Generate report
-        report = await monitor.generate_performance_report()
-        self.assertIn('summary', report)
-        self.assertIn('system_health', report)
-        
-    async def test_error_handling_and_recovery(self):
-        """Test system error handling and recovery"""
-        # Initialize system with error simulation
-        market_data = MarketDataInput(self.config['market_data'])
-        
-        # Simulate connection error
-        with patch.object(market_data, '_connect_websocket', side_effect=Exception("Connection failed")):
-            # Should handle gracefully
-            connected = await market_data.connect()
-            self.assertFalse(connected)
-            
-        # Test recovery mechanism
-        recovery_manager = Mock()
-        recovery_manager.execute_recovery = AsyncMock(return_value={'success': True})
-        
-        # Simulate recovery
-        result = await recovery_manager.execute_recovery({}, "Connection failure")
-        self.assertTrue(result['success'])
-        
-    async def test_performance_under_load(self):
-        """Test system performance under high load"""
-        # Initialize components
-        features = FeatureEngineeringPipeline(self.config['features'])
-        
-        # Generate large dataset
-        large_dataset = self._generate_test_ticks(1000)
-        
-        # Measure processing time
-        start_time = time.time()
-        
-        for i in range(100, len(large_dataset)):
-            window = large_dataset[i-100:i]
-            await features.extract_features(window)
-            
-        duration = time.time() - start_time
-        
-        # Should process reasonably fast
-        self.assertLess(duration, 10.0)  # Less than 10 seconds for 900 windows
-        
-    def _generate_test_ticks(self, count: int) -> List[MarketTick]:
-        """Generate test market ticks"""
-        ticks = []
-        base_price = 50000
-        
-        for i in range(count):
-            price = base_price + np.random.normal(0, 100)
-            
-            tick = MarketTick(
-                symbol='BTCUSDT',
-                price=price,
-                volume=100 + np.random.exponential(50),
-                timestamp=time.time() + i,
-                bid=price - 0.5,
-                ask=price + 0.5,
-                exchange='binance'
-            )
-            
-            ticks.append(tick)
-            
-        return ticks
-
-
-class TestComponentInteractions(unittest.TestCase):
-    """Test specific component interactions"""
+        # Total risk should be within limits
+        total_risk = sum(o['size'] * o['price'] for o in approved_orders)
+        assert total_risk <= config['max_position_size'] * grid_setup['center_price']
     
-    async def test_attention_regime_interaction(self):
-        """Test interaction between attention layer and regime detector"""
-        attention = AttentionLearningLayer()
-        regime_detector = MarketRegimeDetector()
+    @pytest.mark.asyncio
+    async def test_risk_to_execution_integration(self, integrated_system):
+        """Test risk-approved orders going to execution"""
+        components, config = integrated_system
         
-        # Process data through both
-        features = {
-            'volatility_5m': 0.002,
-            'trend_strength': 0.7,
-            'volume_ratio': 1.5
-        }
-        
-        # Attention enhancement
-        enhanced = await attention.process_market_data(features, [])
-        
-        # Regime detection with enhanced features
-        regime, confidence = await regime_detector.detect_regime(enhanced)
-        
-        # Verify interaction
-        self.assertNotEqual(features, enhanced)  # Features should be modified
-        self.assertIsInstance(regime, MarketRegime)
-        
-    async def test_risk_execution_interaction(self):
-        """Test interaction between risk manager and execution engine"""
-        risk_manager = RiskManagementSystem()
-        execution_engine = ExecutionEngine()
-        
-        # Create order
+        # Create test order
         order = {
-            'symbol': 'BTCUSDT',
+            'symbol': config['symbol'],
             'side': 'buy',
+            'size': 0.01,
             'price': 50000,
-            'quantity': 0.001
+            'type': 'limit'
         }
         
-        # Risk check
-        risk_result = await risk_manager.check_order_risk(order)
-        
-        if risk_result['approved']:
-            # Mock execution
-            with patch.object(execution_engine, '_submit_order', new_callable=AsyncMock):
-                result = await execution_engine.execute_order(order)
-                self.assertIsNotNone(result)
-        else:
-            # Verify rejection reason
-            self.assertIn('reason', risk_result)
-            
-    async def test_feedback_overfitting_interaction(self):
-        """Test interaction between feedback loop and overfitting detector"""
-        feedback_loop = FeedbackLoop()
-        overfitting_detector = OverfittingDetector()
-        
-        # Register overfitting detector with feedback loop
-        feedback_loop.register_component('overfitting_detector', overfitting_detector)
-        
-        # Simulate trades with degrading performance
-        for i in range(100):
-            trade = {
-                'profit': 100 if i < 50 else -50,
-                'win': i < 50,
-                'features': {'vol': 0.001}
-            }
-            
-            await feedback_loop.process_trade_result(trade)
-            
-        # Check if overfitting was detected
-        insights = feedback_loop.get_recent_insights()
-        overfitting_insights = [i for i in insights if i.category == 'overfitting']
-        
-        self.assertGreater(len(overfitting_insights), 0)
-
-
-# Run specific test scenarios
-async def run_integration_test_scenario(scenario: str):
-    """Run specific integration test scenario"""
-    
-    if scenario == "full_trading_cycle":
-        # Complete trading cycle test
-        await test_full_trading_cycle()
-        
-    elif scenario == "overfitting_detection":
-        # Overfitting detection and recovery
-        await test_overfitting_scenario()
-        
-    elif scenario == "stress_test":
-        # High load stress test
-        await test_stress_scenario()
-        
-    elif scenario == "failover":
-        # Failover and recovery test
-        await test_failover_scenario()
-        
-
-async def test_full_trading_cycle():
-    """Test complete trading cycle from data to execution"""
-    print("Running full trading cycle test...")
-    
-    # Initialize all components
-    components = await initialize_test_system()
-    
-    # Generate market scenario
-    market_scenario = generate_market_scenario("ranging", duration=1000)
-    
-    # Run trading cycle
-    results = []
-    
-    for tick in market_scenario:
-        # Process tick through system
-        result = await process_trading_cycle(components, tick)
-        results.append(result)
-        
-    # Analyze results
-    performance = analyze_trading_results(results)
-    
-    print(f"Trading cycle complete:")
-    print(f"- Total trades: {performance['total_trades']}")
-    print(f"- Win rate: {performance['win_rate']:.2%}")
-    print(f"- Profit factor: {performance['profit_factor']:.2f}")
-    
-    return performance
-
-
-async def test_overfitting_scenario():
-    """Test overfitting detection and recovery"""
-    print("Running overfitting scenario test...")
-    
-    # Initialize components
-    components = await initialize_test_system()
-    
-    # Create overfitting conditions
-    print("Creating overfitting conditions...")
-    
-    # Phase 1: Good training performance
-    for i in range(100):
-        await simulate_trade(components, win_rate=0.7, is_training=True)
-        
-    # Phase 2: Poor live performance
-    for i in range(100):
-        await simulate_trade(components, win_rate=0.4, is_training=False)
-        
-    # Check detection
-    detection = await components['overfitting_detector'].detect_overfitting()
-    
-    print(f"Overfitting detected: {detection['is_overfitting']}")
-    print(f"Severity: {detection['severity']}")
-    
-    if detection['is_overfitting']:
-        # Execute recovery
-        recovery_result = await components['recovery_manager'].recover_from_overfitting(
-            detection,
-            detection['severity']
-        )
-        
-        print(f"Recovery executed: {recovery_result['success']}")
-        print(f"Actions taken: {recovery_result['actions_taken']}")
-        
-    return detection
-
-
-async def test_stress_scenario():
-    """Test system under high load"""
-    print("Running stress test scenario...")
-    
-    components = await initialize_test_system()
-    
-    # Generate high-frequency data
-    tick_rate = 100  # ticks per second
-    duration = 10    # seconds
-    
-    start_time = time.time()
-    processed = 0
-    errors = 0
-    
-    print(f"Processing {tick_rate * duration} ticks...")
-    
-    for i in range(tick_rate * duration):
-        try:
-            tick = generate_random_tick('BTCUSDT')
-            await process_tick_fast(components, tick)
-            processed += 1
-            
-        except Exception as e:
-            errors += 1
-            
-    elapsed = time.time() - start_time
-    
-    print(f"Stress test complete:")
-    print(f"- Processed: {processed} ticks")
-    print(f"- Errors: {errors}")
-    print(f"- Rate: {processed/elapsed:.1f} ticks/second")
-    print(f"- Latency: {elapsed/processed*1000:.1f} ms/tick")
-    
-    return {
-        'processed': processed,
-        'errors': errors,
-        'rate': processed/elapsed,
-        'latency': elapsed/processed
-    }
-
-
-async def test_failover_scenario():
-    """Test system failover and recovery"""
-    print("Running failover scenario test...")
-    
-    components = await initialize_test_system()
-    checkpoint_manager = components['checkpoint_manager']
-    
-    # Save initial state
-    print("Saving initial checkpoint...")
-    checkpoint_id = await checkpoint_manager.save_checkpoint(
-        'system_state',
-        components['attention'],
-        {'performance': 0.65}
-    )
-    
-    # Simulate component failure
-    print("Simulating component failure...")
-    
-    # Corrupt state
-    components['attention'].phase = None
-    components['regime_detector'].current_regime = None
-    
-    # Detect failure
-    health_check = await check_system_health(components)
-    
-    print(f"System health: {health_check['status']}")
-    
-    if health_check['status'] == 'unhealthy':
-        # Execute failover
-        print("Executing failover...")
-        
-        # Restore from checkpoint
-        success = await checkpoint_manager.rollback_to_checkpoint(
-            'system_state',
-            components['attention'],
-            checkpoint_id,
-            reason="System failure"
-        )
-        
-        print(f"Failover success: {success}")
-        
-        # Verify recovery
-        health_check_after = await check_system_health(components)
-        print(f"System health after recovery: {health_check_after['status']}")
-        
-    return health_check_after
-
-
-# Helper functions
-async def initialize_test_system():
-    """Initialize all system components for testing"""
-    config = {
-        'market_data': {'symbols': ['BTCUSDT']},
-        'features': {'extractors': ['price', 'volume']},
-        'attention': {'min_trades_learning': 50},
-        'risk': {'max_position_size': 0.05}
-    }
-    
-    components = {
-        'market_data': MarketDataInput(config['market_data']),
-        'features': FeatureEngineeringPipeline(config['features']),
-        'attention': AttentionLearningLayer(config['attention']),
-        'regime_detector': MarketRegimeDetector(),
-        'strategy_selector': GridStrategySelector(config),
-        'risk_manager': RiskManagementSystem(config['risk']),
-        'execution_engine': ExecutionEngine(),
-        'performance_monitor': PerformanceMonitor(),
-        'feedback_loop': FeedbackLoop(),
-        'overfitting_detector': OverfittingDetector(),
-        'checkpoint_manager': CheckpointManager('./test_checkpoints'),
-        'recovery_manager': Mock(recover_from_overfitting=AsyncMock())
-    }
-    
-    # Initialize components
-    for component in components.values():
-        if hasattr(component, 'initialize'):
-            await component.initialize()
-            
-    return components
-
-
-def generate_market_scenario(scenario_type: str, duration: int) -> List[MarketTick]:
-    """Generate market scenario for testing"""
-    ticks = []
-    base_price = 50000
-    
-    for i in range(duration):
-        if scenario_type == "ranging":
-            # Sideways market
-            price = base_price + np.sin(i/50) * 100 + np.random.normal(0, 20)
-            
-        elif scenario_type == "trending":
-            # Trending market
-            price = base_price + i * 5 + np.random.normal(0, 50)
-            
-        elif scenario_type == "volatile":
-            # Volatile market
-            price = base_price + np.random.normal(0, 200) * (1 + i/1000)
-            
-        else:
-            price = base_price
-            
-        tick = MarketTick(
-            symbol='BTCUSDT',
-            price=price,
-            volume=100 * np.exp(np.random.normal(0, 0.5)),
-            timestamp=time.time() + i,
-            bid=price - 0.5,
-            ask=price + 0.5,
-            exchange='binance'
-        )
-        
-        ticks.append(tick)
-        
-    return ticks
-
-
-async def process_trading_cycle(components: Dict, tick: MarketTick) -> Dict[str, Any]:
-    """Process single trading cycle"""
-    # 1. Ingest market data
-    await components['market_data'].process_tick(tick)
-    
-    # 2. Extract features
-    history = await components['market_data'].get_recent_data(tick.symbol, 50)
-    features = await components['features'].extract_features(history)
-    
-    # 3. Apply attention
-    enhanced_features = await components['attention'].process_market_data(
-        features.features,
-        history
-    )
-    
-    # 4. Detect regime
-    regime, confidence = await components['regime_detector'].detect_regime(enhanced_features)
-    
-    # 5. Select strategy
-    strategy = await components['strategy_selector'].select_strategy(regime, enhanced_features)
-    
-    # 6. Generate orders
-    grid_levels = strategy.calculate_grid_levels(tick.price)
-    
-    # 7. Risk check and execute
-    executed_orders = []
-    
-    for level in grid_levels[:3]:  # Limit to 3 orders for testing
-        order = {
-            'symbol': tick.symbol,
-            'side': level.side,
-            'price': level.price,
-            'quantity': level.quantity
-        }
-        
-        risk_check = await components['risk_manager'].check_order_risk(order)
+        # Risk validation
+        risk_check = await components['risk'].validate_order(order)
         
         if risk_check['approved']:
-            # Mock execution
-            executed_orders.append(order)
-            
-    return {
-        'tick': tick,
-        'regime': regime,
-        'strategy': strategy.__class__.__name__,
-        'orders_executed': len(executed_orders),
-        'timestamp': tick.timestamp
-    }
-
-
-def analyze_trading_results(results: List[Dict]) -> Dict[str, Any]:
-    """Analyze trading results"""
-    total_orders = sum(r['orders_executed'] for r in results)
-    
-    # Simulate P&L
-    pnl = 0
-    wins = 0
-    
-    for i, result in enumerate(results):
-        if result['orders_executed'] > 0:
-            # Simple P&L simulation
-            if i < len(results) - 1:
-                price_change = results[i+1]['tick'].price - result['tick'].price
-                trade_pnl = price_change * 0.001  # Small position
-                pnl += trade_pnl
+            # Execute order
+            with patch.object(components['execution'], '_send_order', new_callable=AsyncMock) as mock_send:
+                mock_send.return_value = {'id': '12345', 'status': 'open'}
                 
-                if trade_pnl > 0:
-                    wins += 1
-                    
-    total_trades = max(1, sum(1 for r in results if r['orders_executed'] > 0))
-    
-    return {
-        'total_trades': total_trades,
-        'total_orders': total_orders,
-        'win_rate': wins / total_trades if total_trades > 0 else 0,
-        'total_pnl': pnl,
-        'profit_factor': abs(pnl) / total_trades if total_trades > 0 else 0
-    }
-
-
-async def simulate_trade(components: Dict, win_rate: float, is_training: bool):
-    """Simulate a trade with given win rate"""
-    win = np.random.random() < win_rate
-    profit = 100 if win else -50
-    
-    if is_training:
-        await components['overfitting_detector'].add_training_result(
-            win_rate=win_rate,
-            profit_factor=1.5 if win else 0.8
-        )
-    else:
-        await components['overfitting_detector'].add_live_result(
-            win_rate=win_rate,
-            profit_factor=1.5 if win else 0.8
-        )
-
-
-def generate_random_tick(symbol: str) -> MarketTick:
-    """Generate random market tick"""
-    price = 50000 + np.random.normal(0, 100)
-    
-    return MarketTick(
-        symbol=symbol,
-        price=price,
-        volume=100 * np.exp(np.random.normal(0, 0.5)),
-        timestamp=time.time(),
-        bid=price - 0.5,
-        ask=price + 0.5,
-        exchange='binance'
-    )
-
-
-async def process_tick_fast(components: Dict, tick: MarketTick):
-    """Fast tick processing for stress testing"""
-    # Minimal processing
-    await components['market_data'].process_tick(tick)
-    
-    # Quick feature extraction
-    if len(components['market_data'].buffer) >= 10:
-        features = {'price': tick.price, 'volume': tick.volume}
-        
-        # Quick regime check
-        regime = MarketRegime.RANGING  # Simplified
-        
-        # Risk check
-        await components['risk_manager'].update_market_data(tick)
-
-
-async def check_system_health(components: Dict) -> Dict[str, Any]:
-    """Check overall system health"""
-    health_status = {
-        'status': 'healthy',
-        'components': {},
-        'issues': []
-    }
-    
-    # Check each component
-    for name, component in components.items():
-        try:
-            if hasattr(component, 'health_check'):
-                component_health = await component.health_check()
-                health_status['components'][name] = component_health
+                execution_result = await components['execution'].execute_order(order)
                 
-                if not component_health.get('healthy', True):
-                    health_status['issues'].append(f"{name}: {component_health.get('issue', 'Unknown')}")
-                    
-            elif hasattr(component, 'phase'):
-                # Check attention layer
-                if component.phase is None:
-                    health_status['issues'].append(f"{name}: Invalid phase")
-                    
-            elif hasattr(component, 'current_regime'):
-                # Check regime detector
-                if component.current_regime is None:
-                    health_status['issues'].append(f"{name}: No regime detected")
-                    
-        except Exception as e:
-            health_status['issues'].append(f"{name}: {str(e)}")
+                assert execution_result is not None
+                assert 'id' in execution_result
+                mock_send.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_execution_to_performance_integration(self, integrated_system):
+        """Test execution results feeding performance monitor"""
+        components, config = integrated_system
+        
+        # Simulate executed trades
+        trades = [
+            {
+                'id': '1',
+                'symbol': config['symbol'],
+                'side': 'buy',
+                'size': 0.01,
+                'price': 50000,
+                'timestamp': datetime.now() - timedelta(hours=2),
+                'status': 'filled'
+            },
+            {
+                'id': '2',
+                'symbol': config['symbol'],
+                'side': 'sell',
+                'size': 0.01,
+                'price': 50500,
+                'timestamp': datetime.now() - timedelta(hours=1),
+                'status': 'filled'
+            }
+        ]
+        
+        # Update performance monitor
+        for trade in trades:
+            await components['performance'].record_trade(trade)
+        
+        # Get performance metrics
+        metrics = await components['performance'].calculate_metrics()
+        
+        assert 'total_trades' in metrics
+        assert metrics['total_trades'] == 2
+        assert 'pnl' in metrics
+        assert metrics['pnl'] > 0  # Should be profitable
+    
+    @pytest.mark.asyncio
+    async def test_performance_to_feedback_integration(self, integrated_system):
+        """Test performance metrics feeding back to improve strategy"""
+        components, config = integrated_system
+        
+        # Simulate performance history
+        performance_data = {
+            'win_rate': 0.45,  # Below target
+            'sharpe_ratio': 0.8,
+            'max_drawdown': 0.15,
+            'total_trades': 100
+        }
+        
+        # Feed to feedback loop
+        adjustments = await components['feedback'].analyze_performance(performance_data)
+        
+        assert adjustments is not None
+        assert 'attention_params' in adjustments
+        assert 'risk_params' in adjustments
+        assert 'grid_params' in adjustments
+        
+        # Should suggest improvements for low win rate
+        assert adjustments['risk_params']['position_size_multiplier'] < 1.0
+    
+    @pytest.mark.asyncio
+    async def test_full_cycle_integration(self, integrated_system):
+        """Test complete cycle from market data to feedback"""
+        components, config = integrated_system
+        
+        # Initialize system state
+        system_state = {
+            'positions': [],
+            'orders': [],
+            'balance': 10000,
+            'performance': {'trades': [], 'pnl': 0}
+        }
+        
+        # Simulate multiple market cycles
+        for cycle in range(3):
+            # Generate market data
+            market_data = self._generate_market_data(100)
             
-    # Overall status
-    if health_status['issues']:
-        health_status['status'] = 'unhealthy'
+            # 1. Attention analysis
+            attention_features = await components['attention'].process_market_data(market_data)
+            
+            # 2. Regime detection
+            regime = await components['regime'].detect_regime(
+                market_data, 
+                attention_features=attention_features
+            )
+            
+            # 3. Grid strategy adjustment
+            grid_params = await components['grid'].adjust_for_regime(regime)
+            
+            # 4. Create orders with risk validation
+            grid_orders = await components['grid'].create_grid_orders(grid_params)
+            validated_orders = []
+            
+            for order in grid_orders:
+                risk_check = await components['risk'].validate_order(
+                    order, 
+                    current_positions=system_state['positions']
+                )
+                if risk_check['approved']:
+                    validated_orders.append(order)
+            
+            # 5. Execute orders (mock)
+            executed_trades = []
+            for order in validated_orders[:2]:  # Execute first 2 orders
+                trade = {
+                    'id': f'trade_{cycle}_{len(executed_trades)}',
+                    'symbol': order['symbol'],
+                    'side': order['side'],
+                    'size': order['size'],
+                    'price': order['price'],
+                    'timestamp': datetime.now(),
+                    'status': 'filled'
+                }
+                executed_trades.append(trade)
+                system_state['positions'].append(trade)
+            
+            # 6. Update performance
+            for trade in executed_trades:
+                await components['performance'].record_trade(trade)
+            
+            # 7. Get metrics and feedback
+            metrics = await components['performance'].calculate_metrics()
+            adjustments = await components['feedback'].analyze_performance(metrics)
+            
+            # 8. Apply adjustments (mock)
+            if adjustments:
+                # Would apply adjustments to components here
+                pass
+            
+            system_state['performance']['trades'].extend(executed_trades)
         
-    return health_status
-
-
-# Test runner
-if __name__ == '__main__':
-    # Run unit tests
-    print("Running integration tests...")
-    unittest.main(verbosity=2, exit=False)
+        # Verify full cycle completed
+        assert len(system_state['performance']['trades']) > 0
+        final_metrics = await components['performance'].calculate_metrics()
+        assert final_metrics['total_trades'] > 0
     
-    # Run scenario tests
-    print("\n\nRunning scenario tests...")
-    
-    scenarios = [
-        "full_trading_cycle",
-        "overfitting_detection",
-        "stress_test",
-        "failover"
-    ]
-    
-    for scenario in scenarios:
-        print(f"\n{'='*50}")
-        print(f"Scenario: {scenario}")
-        print('='*50)
+    @pytest.mark.asyncio
+    async def test_error_propagation_integration(self, integrated_system):
+        """Test error handling across components"""
+        components, config = integrated_system
         
-        asyncio.run(run_integration_test_scenario(scenario))
+        # Test invalid data propagation
+        invalid_data = pd.DataFrame()  # Empty dataframe
+        
+        # Attention should handle gracefully
+        with pytest.raises(ValueError):
+            await components['attention'].process_market_data(invalid_data)
+        
+        # Risk manager should reject invalid orders
+        invalid_order = {'size': -1}  # Negative size
+        risk_check = await components['risk'].validate_order(invalid_order)
+        assert not risk_check['approved']
+        assert 'error' in risk_check
+    
+    @pytest.mark.asyncio
+    async def test_concurrent_component_access(self, integrated_system):
+        """Test components handling concurrent requests"""
+        components, config = integrated_system
+        
+        market_data = self._generate_market_data(100)
+        
+        # Concurrent tasks
+        tasks = [
+            components['attention'].process_market_data(market_data),
+            components['regime'].detect_regime(market_data),
+            components['risk'].get_current_exposure(),
+            components['performance'].calculate_metrics()
+        ]
+        
+        # All should complete without deadlock
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Check no exceptions
+        for result in results:
+            assert not isinstance(result, Exception)
+    
+    # Helper methods
+    def _generate_market_data(self, periods):
+        """Generate synthetic market data"""
+        np.random.seed(42)
+        dates = pd.date_range(end=datetime.now(), periods=periods, freq='5min')
+        
+        price = 50000
+        prices = []
+        for _ in range(periods):
+            price *= (1 + np.random.normal(0, 0.001))
+            prices.append(price)
+        
+        return pd.DataFrame({
+            'timestamp': dates,
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
+            'close': prices,
+            'volume': np.random.uniform(100, 1000, periods)
+        })
+    
+    def _generate_trending_market(self, periods):
+        """Generate trending market data"""
+        dates = pd.date_range(end=datetime.now(), periods=periods, freq='5min')
+        base_price = 50000
+        trend = np.linspace(0, 1000, periods)
+        noise = np.random.normal(0, 50, periods)
+        prices = base_price + trend + noise
+        
+        return pd.DataFrame({
+            'timestamp': dates,
+            'close': prices,
+            'volume': np.random.uniform(100, 1000, periods)
+        })
+    
+    def _generate_ranging_market(self, periods):
+        """Generate ranging market data"""
+        dates = pd.date_range(end=datetime.now(), periods=periods, freq='5min')
+        base_price = 50000
+        prices = base_price + 100 * np.sin(np.linspace(0, 4*np.pi, periods))
+        prices += np.random.normal(0, 20, periods)
+        
+        return pd.DataFrame({
+            'timestamp': dates,
+            'close': prices,
+            'volume': np.random.uniform(100, 1000, periods)
+        })

@@ -20,9 +20,9 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import asyncio
 
-# Assuming the module structure
-from src.core.grid_strategy import (
-    GridStrategy,
+# GridAttention project imports
+from core.grid_strategy_selector import (
+    GridStrategySelector,
     GridConfig,
     GridLevel,
     GridOrder,

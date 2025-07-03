@@ -22,8 +22,8 @@ from unittest.mock import Mock, patch, MagicMock
 from typing import Dict, List, Tuple, Optional
 import math
 
-# Assuming the module structure
-from src.models.attention_models import (
+# GridAttention project imports
+from models.attention_models import (
     MultiHeadAttention,
     SelfAttention,
     CrossAttention,

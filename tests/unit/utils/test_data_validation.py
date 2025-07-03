@@ -21,8 +21,8 @@ from typing import List, Dict, Optional, Any
 import json
 from unittest.mock import Mock, patch
 
-# Assuming the module structure
-from src.utils.data_validation import (
+# GridAttention project imports
+from utils.data_validation import (
     DataValidator,
     ValidationRule,
     ValidationResult,

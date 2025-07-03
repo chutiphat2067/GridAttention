@@ -24,8 +24,8 @@ from scipy import stats
 from sklearn.model_selection import TimeSeriesSplit
 import warnings
 
-# Assuming the module structure
-from src.core.overfitting_detector import (
+# GridAttention project imports
+from core.overfitting_detector import (
     OverfittingDetector,
     OverfittingConfig,
     ValidationMethod,

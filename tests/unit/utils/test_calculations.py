@@ -21,8 +21,8 @@ from typing import List, Dict, Optional, Union
 import math
 from unittest.mock import Mock, patch
 
-# Assuming the module structure
-from src.utils.calculations import (
+# GridAttention project imports
+from utils.calculations import (
     FinancialCalculator,
     StatisticalCalculator,
     TechnicalIndicators,

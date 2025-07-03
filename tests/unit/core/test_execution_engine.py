@@ -23,8 +23,8 @@ from typing import List, Dict, Optional
 from collections import deque
 import uuid
 
-# Assuming the module structure
-from src.core.execution_engine import (
+# GridAttention project imports
+from core.execution_engine import (
     ExecutionEngine,
     ExecutionConfig,
     Order,

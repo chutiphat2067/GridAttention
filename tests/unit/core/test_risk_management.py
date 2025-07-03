@@ -22,9 +22,9 @@ from typing import List, Dict, Optional
 import asyncio
 from scipy import stats
 
-# Assuming the module structure
-from src.core.risk_management import (
-    RiskManager,
+# GridAttention project imports
+from core.risk_management_system import (
+    RiskManagementSystem,
     RiskConfig,
     RiskMetrics,
     PositionSizer,

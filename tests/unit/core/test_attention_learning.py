@@ -18,14 +18,15 @@ from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timedelta
 import pandas as pd
 
-# Assuming the module structure based on the test path
-from src.core.attention_learning import (
-    AttentionLearning,
+# GridAttention project imports
+from core.attention_learning_layer import (
+    AttentionLearningLayer,
     MarketAttentionModel,
     FeatureAttention,
     TemporalAttention,
     AttentionConfig,
-    AttentionMetrics
+    AttentionMetrics,
+    AttentionPhase
 )
 
 

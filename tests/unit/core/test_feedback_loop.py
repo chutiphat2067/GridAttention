@@ -23,8 +23,8 @@ import asyncio
 from sklearn.ensemble import RandomForestRegressor
 import json
 
-# Assuming the module structure
-from src.core.feedback_loop import (
+# GridAttention project imports
+from core.feedback_loop import (
     FeedbackLoop,
     FeedbackConfig,
     PerformanceFeedback,

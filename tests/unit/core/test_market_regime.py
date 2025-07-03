@@ -20,8 +20,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 import json
 
-# Assuming the module structure
-from src.core.market_regime import (
+# GridAttention project imports
+from core.market_regime_detector import (
     MarketRegimeDetector,
     RegimeState,
     RegimeConfig,

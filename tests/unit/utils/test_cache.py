@@ -27,8 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-# Assuming the module structure
-from src.utils.cache import (
+# GridAttention project imports
+from utils.cache import (
     CacheManager,
     MemoryCache,
     RedisCache,
