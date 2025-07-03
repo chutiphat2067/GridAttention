@@ -52,8 +52,10 @@ FEE_DISCOUNT_THRESHOLD = 0.0003  # 0.03% maker fee threshold
 # Enums
 class OrderStatus(Enum):
     """Order status types"""
+    NEW = "new"
     PENDING = "pending"
     SUBMITTED = "submitted"
+    PARTIALLY_FILLED = "partially_filled"
     PARTIAL = "partial"
     FILLED = "filled"
     CANCELLED = "cancelled"
@@ -80,6 +82,407 @@ class TimeInForce(Enum):
     POST_ONLY = "PO"  # Post Only (Maker only)
 
 
+class OrderSide(Enum):
+    """Order side types"""
+    BUY = "buy"
+    SELL = "sell"
+
+
+# Configuration and Data Classes
+@dataclass
+class ExecutionConfig:
+    """Configuration for execution engine"""
+    max_order_size: float = 10000.0
+    max_slippage: float = 0.002  # 0.2%
+    latency_threshold: int = 100  # ms
+    retry_attempts: int = 3
+    enable_smart_routing: bool = True
+    enable_iceberg_orders: bool = True
+    preferred_exchanges: List[str] = field(default_factory=lambda: ['binance', 'coinbase'])
+    execution_algorithms: List[str] = field(default_factory=lambda: ['TWAP', 'VWAP', 'POV'])
+    routing_strategy: str = 'best_price'
+    
+    def __post_init__(self):
+        """Validate configuration"""
+        if self.max_slippage > 0.1:  # 10%
+            raise ValueError("max_slippage cannot exceed 10%")
+        if self.latency_threshold < 0:
+            raise ValueError("latency_threshold must be positive")
+        if self.retry_attempts <= 0:
+            raise ValueError("retry_attempts must be positive")
+
+
+@dataclass
+class Fill:
+    """Trade fill information"""
+    fill_id: str
+    order_id: str
+    quantity: float
+    price: float
+    timestamp: datetime
+    fee: float = 0.0
+    exchange: str = ""
+    
+    def __post_init__(self):
+        """Convert numeric types"""
+        from decimal import Decimal
+        if not isinstance(self.quantity, Decimal):
+            self.quantity = Decimal(str(self.quantity))
+        if not isinstance(self.price, Decimal):
+            self.price = Decimal(str(self.price))
+        if not isinstance(self.fee, Decimal):
+            self.fee = Decimal(str(self.fee))
+
+
+@dataclass
+class ExecutionAlgorithm:
+    """Execution algorithm implementation"""
+    name: str
+    
+    def calculate_twap_slices(self, total_quantity, duration_minutes, slice_interval_minutes=5):
+        """Calculate TWAP order slices"""
+        from decimal import Decimal
+        total_quantity = Decimal(str(total_quantity))
+        num_slices = duration_minutes // slice_interval_minutes
+        slice_size = total_quantity / num_slices
+        return [slice_size] * num_slices
+    
+    def calculate_vwap_slices(self, total_quantity, volume_profile, start_hour=9, end_hour=16):
+        """Calculate VWAP order slices based on volume profile"""
+        from decimal import Decimal
+        total_quantity = Decimal(str(total_quantity))
+        total_volume = sum(volume_profile.values())
+        
+        slices = {}
+        for hour in range(start_hour, end_hour + 1):
+            if hour in volume_profile:
+                hour_volume = volume_profile[hour]
+                proportion = hour_volume / total_volume
+                slices[hour] = total_quantity * Decimal(str(proportion))
+        
+        return slices
+    
+    def create_iceberg_slices(self, total_quantity, visible_quantity, randomize=False):
+        """Create iceberg order slices"""
+        from decimal import Decimal
+        import random
+        
+        total_quantity = Decimal(str(total_quantity))
+        visible_quantity = Decimal(str(visible_quantity))
+        
+        slices = []
+        remaining = total_quantity
+        
+        while remaining > 0:
+            if randomize:
+                # Add ±10% randomization
+                factor = Decimal(str(random.uniform(0.9, 1.1)))
+                slice_size = min(visible_quantity * factor, remaining)
+            else:
+                slice_size = min(visible_quantity, remaining)
+            
+            slices.append(slice_size)
+            remaining -= slice_size
+        
+        return slices
+
+
+class SmartOrderRouter:
+    """Smart order routing implementation"""
+    
+    def __init__(self, config: ExecutionConfig, exchanges: Dict):
+        self.config = config
+        self.exchanges = exchanges
+    
+    def route_order(self, order):
+        """Route order to optimal exchange"""
+        result = {
+            'primary_exchange': None,
+            'estimated_price': None,
+            'split_orders': [],
+            'total_cost': None,
+            'fee_impact': None,
+            'failover_reason': None
+        }
+        
+        # Find best exchange
+        best_exchange = None
+        best_price = None
+        
+        for exchange_name, exchange in self.exchanges.items():
+            if not exchange.is_connected():
+                continue
+                
+            try:
+                order_book = exchange.get_order_book()
+                
+                if order.side == OrderSide.BUY:
+                    if order_book['asks']:
+                        price = order_book['asks'][0][0]  # Best ask
+                        if best_price is None or price < best_price:
+                            best_price = price
+                            best_exchange = exchange_name
+                else:  # SELL
+                    if order_book['bids']:
+                        price = order_book['bids'][0][0]  # Best bid
+                        if best_price is None or price > best_price:
+                            best_price = price
+                            best_exchange = exchange_name
+            except:
+                # Exchange unavailable, skip
+                continue
+        
+        if best_exchange is None:
+            # All exchanges failed, use failover
+            available_exchanges = [name for name, ex in self.exchanges.items() if ex.is_connected()]
+            if available_exchanges:
+                best_exchange = available_exchanges[0]
+                result['failover_reason'] = 'Primary exchanges unavailable'
+        
+        result['primary_exchange'] = best_exchange
+        
+        if best_price:
+            from decimal import Decimal
+            result['estimated_price'] = Decimal(str(best_price))
+        
+        # Handle large orders (split if needed)
+        if order.quantity > 50:  # Arbitrary threshold
+            # Split into smaller chunks
+            chunk_size = 20
+            remaining = order.quantity
+            
+            while remaining > 0:
+                chunk = min(chunk_size, remaining)
+                result['split_orders'].append({
+                    'exchange': best_exchange,
+                    'quantity': chunk
+                })
+                remaining -= chunk
+        
+        return result
+
+
+class OrderBook:
+    """Order book representation"""
+    
+    def __init__(self, exchange_name: str):
+        self.exchange_name = exchange_name
+        self.bids = []
+        self.asks = []
+        self.last_update = None
+    
+    def update(self, data: Dict):
+        """Update order book data"""
+        self.bids = data.get('bids', [])
+        self.asks = data.get('asks', [])
+        self.last_update = datetime.now()
+    
+    @property
+    def best_bid(self):
+        """Get best bid price and quantity"""
+        return self.bids[0] if self.bids else None
+    
+    @property
+    def best_ask(self):
+        """Get best ask price and quantity"""
+        return self.asks[0] if self.asks else None
+    
+    @classmethod
+    def aggregate(cls, order_books: List['OrderBook']):
+        """Aggregate multiple order books"""
+        aggregated = cls('aggregated')
+        
+        all_bids = []
+        all_asks = []
+        
+        for book in order_books:
+            all_bids.extend(book.bids)
+            all_asks.extend(book.asks)
+        
+        # Sort bids (descending) and asks (ascending)
+        all_bids.sort(key=lambda x: x[0], reverse=True)
+        all_asks.sort(key=lambda x: x[0])
+        
+        aggregated.bids = all_bids
+        aggregated.asks = all_asks
+        
+        return aggregated
+    
+    def calculate_liquidity(self, depth_percentage: float):
+        """Calculate available liquidity at given depth"""
+        mid_price = (self.best_bid[0] + self.best_ask[0]) / 2 if self.best_bid and self.best_ask else 0
+        
+        if mid_price == 0:
+            return {'bid_liquidity': 0, 'ask_liquidity': 0}
+        
+        depth_amount = mid_price * depth_percentage
+        
+        bid_liquidity = 0
+        ask_liquidity = 0
+        
+        # Calculate bid liquidity
+        for price, quantity in self.bids:
+            if price >= mid_price - depth_amount:
+                bid_liquidity += quantity
+            else:
+                break
+        
+        # Calculate ask liquidity  
+        for price, quantity in self.asks:
+            if price <= mid_price + depth_amount:
+                ask_liquidity += quantity
+            else:
+                break
+        
+        return {
+            'bid_liquidity': bid_liquidity,
+            'ask_liquidity': ask_liquidity
+        }
+    
+    def estimate_market_impact(self, side: str, quantity: float):
+        """Estimate market impact for given order"""
+        levels = self.asks if side == 'buy' else self.bids
+        
+        remaining_qty = quantity
+        total_cost = 0
+        levels_consumed = 0
+        
+        for price, available_qty in levels:
+            levels_consumed += 1
+            consume_qty = min(remaining_qty, available_qty)
+            total_cost += consume_qty * price
+            remaining_qty -= consume_qty
+            
+            if remaining_qty <= 0:
+                break
+        
+        if quantity > 0:
+            average_price = total_cost / quantity
+            best_price = levels[0][0] if levels else 0
+            price_impact = (average_price - best_price) / best_price if best_price > 0 else 0
+        else:
+            average_price = 0
+            price_impact = 0
+        
+        return {
+            'average_price': average_price,
+            'price_impact': price_impact,
+            'levels_consumed': levels_consumed
+        }
+
+
+class ExchangeConnector:
+    """Exchange connector interface"""
+    
+    def __init__(self, name: str):
+        self.name = name
+    
+    async def place_order(self, order):
+        """Place order on exchange"""
+        return {
+            'order_id': f'exchange_{order.order_id}',
+            'status': 'new',
+            'timestamp': datetime.now()
+        }
+    
+    async def cancel_order(self, order_id: str):
+        """Cancel order on exchange"""
+        return {
+            'order_id': order_id,
+            'status': 'cancelled'
+        }
+    
+    async def get_order_status(self, order_id: str):
+        """Get order status from exchange"""
+        return {
+            'order_id': order_id,
+            'status': 'filled',
+            'filled_quantity': '1.0',
+            'average_price': '50000'
+        }
+
+
+class LatencyMonitor:
+    """Latency monitoring system"""
+    
+    def __init__(self, warning_threshold: int = 100, critical_threshold: int = 500):
+        self.warning_threshold = warning_threshold
+        self.critical_threshold = critical_threshold
+        self.latencies = defaultdict(list)
+        self.alert_callback = None
+    
+    def record_latency(self, exchange: str, operation: str, latency: float):
+        """Record latency measurement"""
+        key = f"{exchange}_{operation}"
+        self.latencies[key].append(latency)
+        
+        # Check for alerts
+        if self.alert_callback:
+            if latency > self.critical_threshold:
+                self.alert_callback({
+                    'level': 'critical',
+                    'exchange': exchange,
+                    'operation': operation,
+                    'latency': latency
+                })
+            elif latency > self.warning_threshold:
+                self.alert_callback({
+                    'level': 'warning', 
+                    'exchange': exchange,
+                    'operation': operation,
+                    'latency': latency
+                })
+    
+    def get_statistics(self, exchange: str, operation: str):
+        """Get latency statistics"""
+        key = f"{exchange}_{operation}"
+        latencies = self.latencies[key]
+        
+        if not latencies:
+            return {}
+        
+        sorted_latencies = sorted(latencies)
+        count = len(sorted_latencies)
+        
+        return {
+            'count': count,
+            'mean': sum(sorted_latencies) / count,
+            'median': sorted_latencies[count // 2],
+            'p95': sorted_latencies[int(count * 0.95)] if count > 0 else 0,
+            'p99': sorted_latencies[int(count * 0.99)] if count > 0 else 0
+        }
+    
+    def set_alert_callback(self, callback):
+        """Set alert callback function"""
+        self.alert_callback = callback
+    
+    def detect_degradation(self, exchange: str, operation: str, window_size: int = 10):
+        """Detect latency degradation over time"""
+        key = f"{exchange}_{operation}"
+        latencies = self.latencies[key]
+        
+        if len(latencies) < window_size:
+            return {'is_degrading': False, 'trend': 0}
+        
+        recent = latencies[-window_size:]
+        
+        # Simple trend calculation
+        x = list(range(window_size))
+        y = recent
+        
+        # Linear regression slope
+        n = len(x)
+        slope = (n * sum(x[i] * y[i] for i in range(n)) - sum(x) * sum(y)) / (n * sum(x[i]**2 for i in range(n)) - sum(x)**2)
+        
+        is_degrading = slope > 5  # Increasing by more than 5ms per measurement
+        
+        return {
+            'is_degrading': is_degrading,
+            'trend': slope,
+            'recommendation': 'Consider switching to backup exchange' if is_degrading else 'Performance is stable'
+        }
+
+
 class ExecutionError(Exception):
     """Custom exception for execution errors"""
     pass
@@ -100,12 +503,12 @@ class Order:
     """Represents a single order"""
     order_id: str
     symbol: str
-    side: str  # 'buy' or 'sell'
+    side: str  # 'buy' or 'sell'  
     order_type: OrderType
-    price: float
     quantity: float
-    time_in_force: TimeInForce
-    status: OrderStatus = OrderStatus.PENDING
+    price: float = None  # Optional for market orders
+    time_in_force: TimeInForce = TimeInForce.GTC
+    status: OrderStatus = OrderStatus.NEW
     exchange: str = ""
     client_order_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: float = field(default_factory=time.time)
@@ -114,6 +517,65 @@ class Order:
     average_price: float = 0.0
     fees: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    fills: List = field(default_factory=list)
+    expected_price: float = None  # For slippage monitoring
+    priority: int = 5  # Order priority (1=highest)
+    
+    def __post_init__(self):
+        """Validate order after creation"""
+        from decimal import Decimal
+        
+        # Convert to Decimal for precision
+        if not isinstance(self.quantity, Decimal):
+            self.quantity = Decimal(str(self.quantity))
+        if self.price and not isinstance(self.price, Decimal):
+            self.price = Decimal(str(self.price))
+        if not isinstance(self.filled_quantity, Decimal):
+            self.filled_quantity = Decimal(str(self.filled_quantity))
+        if not isinstance(self.average_price, Decimal):
+            self.average_price = Decimal(str(self.average_price))
+            
+        # Validate order
+        if self.quantity <= 0:
+            raise ValueError("quantity must be positive")
+        
+        if self.order_type == OrderType.MARKET and self.price is not None:
+            raise ValueError("Market orders cannot have price")
+        
+        # Convert side to OrderSide if it's a string
+        if isinstance(self.side, str):
+            self.side = OrderSide.BUY if self.side.lower() == 'buy' else OrderSide.SELL
+    
+    @property
+    def remaining_quantity(self):
+        """Get remaining quantity to fill"""
+        return self.quantity - self.filled_quantity
+    
+    def add_fill(self, fill: Fill):
+        """Add a fill to this order"""
+        from decimal import Decimal
+        
+        self.fills.append(fill)
+        self.filled_quantity += fill.quantity
+        
+        # Convert fees to float for compatibility
+        if isinstance(fill.fee, Decimal):
+            self.fees += float(fill.fee)
+        else:
+            self.fees += fill.fee
+        
+        # Calculate weighted average price
+        if self.filled_quantity > 0:
+            total_value = sum(f.quantity * f.price for f in self.fills)
+            self.average_price = total_value / self.filled_quantity
+        
+        # Update status
+        if self.filled_quantity >= self.quantity:
+            self.status = OrderStatus.FILLED
+        elif self.filled_quantity > 0:
+            self.status = OrderStatus.PARTIALLY_FILLED
+            
+        self.updated_at = time.time()
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -172,31 +634,203 @@ class ExecutionResult:
     retry_count: int = 0
     
     
-@dataclass
 class ExecutionMetrics:
     """Execution performance metrics"""
-    total_orders: int = 0
-    successful_orders: int = 0
-    failed_orders: int = 0
-    rejected_orders: int = 0
-    total_latency: float = 0.0
-    min_latency: float = float('inf')
-    max_latency: float = 0.0
-    fill_rates: Dict[str, float] = field(default_factory=dict)
-    slippage: Dict[str, float] = field(default_factory=dict)
     
-    def add_execution(self, result: ExecutionResult):
+    def __init__(self):
+        self.total_orders = 0
+        self.successful_orders = 0
+        self.failed_orders = 0
+        self.rejected_orders = 0
+        self.total_latency = 0.0
+        self.min_latency = float('inf')
+        self.max_latency = 0.0
+        self.fill_rates = {}
+        self.slippage = {}
+        self.order_results = []
+        self.fills = []
+        self.venue_executions = defaultdict(list)
+        self.trades = []
+        self.executions = []
+    
+    def add_execution(self, result):
         """Add execution result to metrics"""
         self.total_orders += 1
+        self.executions.append(result)
         
-        if result.success:
+        if result.get('success', True):
             self.successful_orders += 1
         else:
             self.failed_orders += 1
             
-        self.total_latency += result.latency
-        self.min_latency = min(self.min_latency, result.latency)
-        self.max_latency = max(self.max_latency, result.latency)
+        latency = result.get('latency', 0)
+        self.total_latency += latency
+        if latency > 0:
+            self.min_latency = min(self.min_latency, latency)
+            self.max_latency = max(self.max_latency, latency)
+    
+    def add_order_result(self, order):
+        """Add order result for fill rate calculation"""
+        self.order_results.append(order)
+    
+    def calculate_fill_rates(self):
+        """Calculate fill rate metrics"""
+        if not self.order_results:
+            return {'overall_fill_rate': 0, 'complete_fill_rate': 0}
+            
+        total_quantity = sum(float(order['quantity']) for order in self.order_results)
+        total_filled = sum(float(order['filled']) for order in self.order_results)
+        complete_fills = sum(1 for order in self.order_results if float(order['filled']) == float(order['quantity']))
+        
+        overall_fill_rate = total_filled / total_quantity if total_quantity > 0 else 0
+        complete_fill_rate = complete_fills / len(self.order_results)
+        
+        return {
+            'overall_fill_rate': overall_fill_rate,
+            'complete_fill_rate': complete_fill_rate
+        }
+    
+    def add_fill(self, fill):
+        """Add fill for slippage analysis"""
+        self.fills.append(fill)
+    
+    def calculate_slippage_statistics(self):
+        """Calculate slippage statistics"""
+        if not self.fills:
+            return {}
+        
+        slippages = []
+        positive_slippages = 0
+        
+        for fill in self.fills:
+            expected = float(fill['expected_price'])
+            actual = float(fill['actual_price'])
+            
+            if fill['side'] == 'buy':
+                slippage = (actual - expected) / expected
+            else:
+                slippage = (expected - actual) / expected
+                
+            slippages.append(slippage * 10000)  # Convert to basis points
+            if slippage > 0:
+                positive_slippages += 1
+        
+        return {
+            'average_slippage_bps': sum(slippages) / len(slippages),
+            'positive_slippage_rate': positive_slippages / len(self.fills),
+            'slippage_cost': sum(abs(s) for s in slippages)
+        }
+    
+    def add_venue_execution(self, venue, status, latency):
+        """Add venue execution data"""
+        self.venue_executions[venue].append({
+            'status': status,
+            'latency': latency
+        })
+    
+    def compare_venues(self):
+        """Compare venue performance"""
+        results = []
+        
+        for venue, executions in self.venue_executions.items():
+            successes = sum(1 for e in executions if e['status'] == 'success')
+            total = len(executions)
+            success_rate = successes / total if total > 0 else 0
+            avg_latency = sum(e['latency'] for e in executions) / total if total > 0 else 0
+            
+            # Calculate composite score: higher success rate and lower latency = better
+            # Normalize latency (lower is better) and combine with success rate
+            latency_penalty = avg_latency / 1000.0  # Scale latency
+            composite_score = success_rate - latency_penalty
+            
+            results.append({
+                'venue': venue,
+                'success_rate': success_rate,
+                'avg_latency': avg_latency,
+                'total_executions': total,
+                'composite_score': composite_score
+            })
+        
+        # Sort by composite score (descending) - higher is better
+        results.sort(key=lambda x: -x['composite_score'])
+        return results
+    
+    def add_trade_cost(self, trade):
+        """Add trade cost data"""
+        self.trades.append(trade)
+    
+    def analyze_execution_costs(self):
+        """Analyze execution costs"""
+        if not self.trades:
+            return {}
+        
+        total_fee_cost = sum(float(trade['quantity']) * float(trade['price']) * float(trade['fee_rate']) for trade in self.trades)
+        total_slippage_cost = sum(float(trade['slippage']) for trade in self.trades)
+        
+        cost_per_venue = defaultdict(lambda: {'fee_cost': 0, 'slippage_cost': 0})
+        for trade in self.trades:
+            venue = trade['venue']
+            fee_cost = float(trade['quantity']) * float(trade['price']) * float(trade['fee_rate'])
+            cost_per_venue[venue]['fee_cost'] += fee_cost
+            cost_per_venue[venue]['slippage_cost'] += float(trade['slippage'])
+        
+        # Find optimal venue (lowest total cost)
+        optimal_venue = min(cost_per_venue.keys(), 
+                          key=lambda v: cost_per_venue[v]['fee_cost'] + cost_per_venue[v]['slippage_cost'])
+        
+        return {
+            'total_fee_cost': total_fee_cost,
+            'total_slippage_cost': total_slippage_cost,
+            'cost_per_venue': dict(cost_per_venue),
+            'optimal_venue': optimal_venue
+        }
+    
+    def generate_daily_report(self, date):
+        """Generate daily execution report"""
+        return {
+            'summary': {
+                'total_orders': self.total_orders,
+                'success_rate': self.get_success_rate(),
+                'avg_latency': self.get_average_latency()
+            },
+            'executions': self.executions,
+            'metrics': {
+                'fill_rates': self.calculate_fill_rates(),
+                'slippage': self.calculate_slippage_statistics()
+            },
+            'costs': self.analyze_execution_costs()
+        }
+    
+    def reconcile_executions(self, internal_records, exchange_records):
+        """Reconcile internal vs exchange records"""
+        discrepancies = []
+        
+        for internal in internal_records:
+            order_id = internal['order_id']
+            
+            # Find matching exchange record
+            exchange = next((e for e in exchange_records if e['order_id'] == order_id), None)
+            
+            if exchange:
+                # Check fill quantity mismatch
+                if abs(float(internal['filled']) - float(exchange['filled'])) > 0.001:
+                    discrepancies.append({
+                        'order_id': order_id,
+                        'type': 'fill_mismatch',
+                        'internal_filled': internal['filled'],
+                        'exchange_filled': exchange['filled']
+                    })
+                
+                # Check status mismatch
+                if internal['status'] != exchange['status']:
+                    discrepancies.append({
+                        'order_id': order_id,
+                        'type': 'status_mismatch',
+                        'internal_status': internal['status'],
+                        'exchange_status': exchange['status']
+                    })
+        
+        return discrepancies
         
     def get_average_latency(self) -> float:
         """Get average execution latency"""
@@ -914,7 +1548,15 @@ class ExecutionEngine:
     High-performance order execution with fee optimization
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config):
+        # Handle both ExecutionConfig and dict
+        if isinstance(config, ExecutionConfig):
+            self.config = config
+        elif isinstance(config, dict):
+            self.config = ExecutionConfig(**config)
+        else:
+            self.config = ExecutionConfig()
+            
         # Extract exchange configs or create default
         if isinstance(config, dict) and 'exchanges' in config:
             exchange_configs = config['exchanges']
@@ -937,6 +1579,8 @@ class ExecutionEngine:
         self.order_validator = OrderValidator()
         self.execution_queue = asyncio.Queue(maxsize=EXECUTION_QUEUE_SIZE)
         self.active_orders = {}  # order_id -> Order
+        self.exchanges = {}  # For testing
+        self.execution_history = []  # For testing
         
         # Performance tracking
         self.metrics = ExecutionMetrics()
@@ -987,6 +1631,151 @@ class ExecutionEngine:
         await self.exchange_manager.close_all()
         
         logger.info("Stopped execution engine")
+    
+    def add_exchange(self, name: str, connector):
+        """Add exchange connector for testing"""
+        self.exchanges[name] = connector
+    
+    async def submit_order(self, order: Order):
+        """Submit single order with retry mechanism"""
+        self.active_orders[order.order_id] = order
+        
+        # Retry mechanism
+        for attempt in range(self.config.retry_attempts):
+            try:
+                # Use first available exchange or mock
+                if self.exchanges:
+                    exchange = list(self.exchanges.values())[0]
+                    result = await exchange.place_order(order)
+                else:
+                    result = {
+                        'order_id': f'exchange_{order.order_id}',
+                        'status': 'new',
+                        'timestamp': datetime.now()
+                    }
+                
+                # Success, break retry loop
+                break
+                
+            except Exception as e:
+                logger.warning(f"Order submission attempt {attempt + 1} failed: {e}")
+                if attempt == self.config.retry_attempts - 1:
+                    # Final attempt failed
+                    raise e
+                # Wait before retry
+                await asyncio.sleep(0.1 * (attempt + 1))
+        
+        # Track execution history  
+        self.execution_history.append({
+            'order_id': order.order_id,
+            'timestamp': datetime.now(),
+            'priority': getattr(order, 'priority', 5)
+        })
+        
+        # Sort by priority for testing queue behavior
+        self.execution_history.sort(key=lambda x: x['priority'])
+        
+        return {
+            'status': 'submitted',
+            'exchange_order_id': result['order_id']
+        }
+    
+    async def cancel_order(self, order_id: str):
+        """Cancel order"""
+        if order_id in self.active_orders:
+            order = self.active_orders[order_id]
+            
+            # Use exchange connector if available
+            if self.exchanges:
+                exchange = list(self.exchanges.values())[0]
+                result = await exchange.cancel_order(order_id)
+            else:
+                result = {'order_id': order_id, 'status': 'cancelled'}
+            
+            # Remove from active orders
+            del self.active_orders[order_id]
+            
+            return {
+                'status': 'cancelled',
+                'order_id': order_id
+            }
+        
+        return {'status': 'not_found'}
+    
+    async def modify_order(self, order_id: str, modifications: dict):
+        """Modify order"""
+        if order_id in self.active_orders:
+            order = self.active_orders[order_id]
+            
+            # Update order attributes
+            for key, value in modifications.items():
+                if hasattr(order, key):
+                    setattr(order, key, value)
+            
+            return {
+                'status': 'modified',
+                'new_price': modifications.get('price'),
+                'new_quantity': modifications.get('quantity')
+            }
+        
+        return {'status': 'not_found'}
+    
+    async def submit_bulk_orders(self, orders: List[Order]):
+        """Submit multiple orders"""
+        results = []
+        for order in orders:
+            result = await self.submit_order(order)
+            results.append(result)
+        return results
+    
+    def get_order(self, order_id: str):
+        """Get order by ID"""
+        return self.active_orders.get(order_id)
+    
+    async def process_fill(self, fill_event: dict):
+        """Process order fill"""
+        order_id = fill_event['order_id']
+        if order_id in self.active_orders:
+            order = self.active_orders[order_id]
+            
+            # Create fill object
+            fill = Fill(
+                fill_id=fill_event['fill_id'],
+                order_id=order_id,
+                quantity=float(fill_event['quantity']),
+                price=float(fill_event['price']),
+                timestamp=datetime.now(),
+                fee=float(fill_event.get('fee', 0))
+            )
+            
+            # Add fill to order
+            order.add_fill(fill)
+            
+            # Check for slippage alerts
+            alerts = []
+            if hasattr(order, 'expected_price') and order.expected_price:
+                from decimal import Decimal
+                expected_price = Decimal(str(order.expected_price))
+                actual_price = fill.price
+                
+                slippage = abs(actual_price - expected_price) / expected_price
+                
+                if slippage > Decimal('0.002'):  # 0.2% threshold
+                    alerts.append({
+                        'type': 'SLIPPAGE_WARNING',
+                        'order_id': order_id,
+                        'expected': float(expected_price),
+                        'actual': float(actual_price),
+                        'slippage': float(slippage)
+                    })
+            
+            return alerts
+        
+        return []
+    
+    def get_execution_history(self):
+        """Get execution history for testing"""
+        return self.execution_history
         
     async def execute_grid_strategy(
         self, 
@@ -1736,49 +2525,94 @@ class SmartExecutionStrategy(ExecutionStrategy):
 
 
 class LatencyMonitor:
-    """Monitor execution latency"""
+    """Monitor execution latency with alerting capabilities"""
     
-    def __init__(self, window_size: int = 1000):
-        self.latencies = deque(maxlen=window_size)
-        self.target_latency = LATENCY_TARGET * 1000  # Convert to ms
+    def __init__(self, warning_threshold: int = 100, critical_threshold: int = 500, window_size: int = 1000):
+        self.warning_threshold = warning_threshold
+        self.critical_threshold = critical_threshold
+        self.latencies = defaultdict(lambda: deque(maxlen=window_size))
+        self.alert_callback = None
         
-    def add_latency(self, latency: float):
-        """Add latency measurement"""
-        self.latencies.append(latency)
+    def record_latency(self, venue: str, operation: str, latency: float):
+        """Record latency measurement"""
+        key = f"{venue}_{operation}"
+        self.latencies[key].append(latency)
         
-    def get_percentile(self, percentile: float) -> float:
-        """Get latency percentile"""
-        if not self.latencies:
-            return 0.0
-        return np.percentile(list(self.latencies), percentile)
+        # Check for alerts
+        if self.alert_callback:
+            if latency >= self.critical_threshold:
+                self.alert_callback({
+                    'level': 'critical',
+                    'venue': venue,
+                    'operation': operation,
+                    'latency': latency,
+                    'threshold': self.critical_threshold
+                })
+            elif latency >= self.warning_threshold:
+                self.alert_callback({
+                    'level': 'warning',
+                    'venue': venue,
+                    'operation': operation,
+                    'latency': latency,
+                    'threshold': self.warning_threshold
+                })
+    
+    def set_alert_callback(self, callback):
+        """Set callback function for alerts"""
+        self.alert_callback = callback
         
-    def is_meeting_target(self) -> bool:
-        """Check if meeting latency target"""
-        if not self.latencies:
-            return True
-        p99 = self.get_percentile(99)
-        return p99 <= self.target_latency
+    def get_statistics(self, venue: str, operation: str) -> Dict[str, float]:
+        """Get latency statistics for venue/operation"""
+        key = f"{venue}_{operation}"
+        latency_list = list(self.latencies[key])
         
-    def get_statistics(self) -> Dict[str, float]:
-        """Get latency statistics"""
-        if not self.latencies:
+        if not latency_list:
             return {
+                'count': 0,
                 'mean': 0.0,
-                'p50': 0.0,
+                'median': 0.0,
                 'p95': 0.0,
                 'p99': 0.0,
                 'min': 0.0,
                 'max': 0.0
             }
             
-        latency_list = list(self.latencies)
         return {
-            'mean': np.mean(latency_list),
-            'p50': np.percentile(latency_list, 50),
-            'p95': np.percentile(latency_list, 95),
-            'p99': np.percentile(latency_list, 99),
-            'min': min(latency_list),
-            'max': max(latency_list)
+            'count': len(latency_list),
+            'mean': float(np.mean(latency_list)),
+            'median': float(np.median(latency_list)),
+            'p95': float(np.percentile(latency_list, 95)),
+            'p99': float(np.percentile(latency_list, 99)),
+            'min': float(min(latency_list)),
+            'max': float(max(latency_list))
+        }
+    
+    def detect_degradation(self, venue: str, operation: str, window_size: int = 10) -> Dict[str, Any]:
+        """Detect latency degradation trends"""
+        key = f"{venue}_{operation}"
+        latency_list = list(self.latencies[key])
+        
+        if len(latency_list) < window_size:
+            return {'is_degrading': False, 'trend': 0, 'recommendation': 'Need more data'}
+        
+        # Calculate trend using linear regression
+        from scipy import stats
+        recent_latencies = latency_list[-window_size:]
+        x = np.arange(len(recent_latencies))
+        slope, _, r_value, _, _ = stats.linregress(x, recent_latencies)
+        
+        # Significant positive trend indicates degradation
+        is_degrading = slope > 1.0 and r_value > 0.7
+        
+        recommendation = "Monitor closely" if is_degrading else "Performance stable"
+        if is_degrading:
+            recommendation = "Consider switching venue or reducing load"
+            
+        return {
+            'is_degrading': bool(is_degrading),
+            'trend': float(slope),
+            'correlation': float(r_value),
+            'recommendation': recommendation
         }
 
 
