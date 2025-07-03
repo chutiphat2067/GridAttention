@@ -1,0 +1,19 @@
+python
+TEST_SUITES.extend([
+    TestSuite(
+        name="Security Tests",
+        module="test_security",
+        description="Security and authentication tests"
+    ),
+    TestSuite(
+        name="Stress Tests", 
+        module="test_stress_load",
+        description="Stress and load tests"
+    ),
+    TestSuite(
+        name="Edge Recovery Tests",
+        module="test_edge_recovery", 
+        description="Edge cases and recovery tests"
+    )
+])
+```
