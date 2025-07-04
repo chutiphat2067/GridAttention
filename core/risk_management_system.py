@@ -963,8 +963,22 @@ class RiskManagementSystem:
             
     def update_portfolio(self, update: Dict):
         """Update portfolio data"""
-        # Process portfolio update
-        pass
+        # Calculate current drawdown from portfolio value changes
+        if not hasattr(self, 'initial_value'):
+            self.initial_value = update.get('total_value', Decimal('100000'))
+        
+        current_value = update.get('total_value', Decimal('100000'))
+        drawdown = float((self.initial_value - current_value) / self.initial_value)
+        
+        # Check for drawdown alerts
+        if drawdown > 0.02:  # 2% drawdown threshold
+            alert = RiskAlert(
+                level=RiskLevel.WARNING,
+                type='DRAWDOWN',
+                message=f'Portfolio drawdown detected: {drawdown:.1%}',
+                timestamp=time.time()
+            )
+            self.alerts.append(alert)
     
     def get_alerts(self) -> List[RiskAlert]:
         """Get current risk alerts"""
