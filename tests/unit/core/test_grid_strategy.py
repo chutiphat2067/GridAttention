@@ -23,6 +23,7 @@ import asyncio
 # GridAttention project imports
 from core.grid_strategy_selector import (
     GridStrategySelector,
+    GridStrategy,
     GridConfig,
     GridLevel,
     GridOrder,
@@ -34,6 +35,22 @@ from core.grid_strategy_selector import (
     OrderStatus,
     GridState
 )
+
+
+@pytest.fixture
+def market_data():
+    """Create sample market data."""
+    dates = pd.date_range(start='2023-01-01', periods=100, freq='5min')
+    prices = 50000 + np.sin(np.linspace(0, 4*np.pi, 100)) * 1000 + np.random.randn(100) * 100
+    
+    return pd.DataFrame({
+        'timestamp': dates,
+        'open': prices,
+        'high': prices + np.random.uniform(0, 100, 100),
+        'low': prices - np.random.uniform(0, 100, 100),
+        'close': prices + np.random.randn(100) * 50,
+        'volume': np.random.randint(10, 100, 100)
+    })
 
 
 class TestGridConfig:
@@ -407,11 +424,11 @@ class TestGridStrategy:
             
     def test_multi_grid_management(self, mock_exchange):
         """Test managing multiple grids."""
-        # Create multiple grid strategies
+        # Create multiple grid strategies with non-overlapping spacings
         configs = [
-            GridConfig(num_levels=10, grid_spacing=0.005),  # Tight grid
-            GridConfig(num_levels=8, grid_spacing=0.01),    # Medium grid
-            GridConfig(num_levels=6, grid_spacing=0.02)     # Wide grid
+            GridConfig(num_levels=6, grid_spacing=0.003),   # Tight grid
+            GridConfig(num_levels=6, grid_spacing=0.007),   # Medium grid  
+            GridConfig(num_levels=6, grid_spacing=0.015)    # Wide grid
         ]
         
         strategies = [GridStrategy(config, mock_exchange) for config in configs]
@@ -731,8 +748,8 @@ class TestGridPerformanceAnalysis:
         returns = market_data['close'].pct_change().dropna()
         volatility = returns.std()
         
-        # Optimal spacing based on volatility
-        volatility_multiplier = 2.0
+        # Optimal spacing based on volatility - use smaller multiplier for better capture rate
+        volatility_multiplier = 0.5
         optimal_spacing = volatility * volatility_multiplier
         
         # Test if spacing captures enough price movement

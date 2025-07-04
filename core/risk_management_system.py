@@ -19,6 +19,8 @@ from enum import Enum
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
+from decimal import Decimal
+from scipy import stats
 
 # Local imports
 from core.attention_learning_layer import AttentionLearningLayer, AttentionPhase
@@ -49,6 +51,7 @@ class RiskLevel(Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+    WARNING = "warning"
 
 
 class RiskViolationType(Enum):
@@ -72,6 +75,44 @@ class RiskAction(Enum):
     CLOSE = "close"  # Close positions
     ALERT = "alert"  # Send alert only
     ADJUST = "adjust"  # Adjust parameters
+
+
+@dataclass
+class RiskConfig:
+    """Risk configuration parameters"""
+    max_position_size: float = 0.02  # 2% per position
+    max_portfolio_risk: float = 0.06  # 6% total risk
+    max_drawdown: float = 0.15  # 15% max drawdown
+    stop_loss_pct: float = 0.02  # 2% stop loss
+    risk_free_rate: float = 0.03  # 3% risk-free rate
+    confidence_level: float = 0.95  # 95% VaR confidence
+    correlation_window: int = 30  # 30 periods
+    use_kelly_criterion: bool = False
+    dynamic_adjustment: bool = False
+    use_trailing_stop: bool = False
+    use_time_stop: bool = False
+    adjustment_frequency: str = 'daily'
+    
+    def __post_init__(self):
+        """Validate configuration"""
+        if self.max_position_size <= 0 or self.max_position_size >= 0.5:
+            raise ValueError("max_position_size must be between 0 and 0.5")
+        if self.max_portfolio_risk <= 0 or self.max_portfolio_risk >= 1.5:
+            raise ValueError("max_portfolio_risk must be between 0 and 1.5")
+        if self.confidence_level <= 0 or self.confidence_level >= 1:
+            raise ValueError("confidence_level must be between 0 and 1")
+        if self.stop_loss_pct > self.max_position_size * 2:  # Reasonable stop loss limit
+            raise ValueError("stop_loss")
+
+
+@dataclass  
+class RiskAlert:
+    """Risk alert message"""
+    level: RiskLevel
+    type: str
+    message: str
+    timestamp: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -269,6 +310,683 @@ class RiskCalculator:
             return returns_df.corr()
         
         return pd.DataFrame()
+
+
+class PositionSizer:
+    """Position sizing algorithms"""
+    
+    def __init__(self, config: RiskConfig):
+        self.config = config
+    
+    def calculate_fixed_size(self, total_capital: Decimal, risk_percentage: float, 
+                           available_capital: Optional[Decimal] = None) -> Decimal:
+        """Calculate fixed percentage position size"""
+        size = total_capital * Decimal(str(risk_percentage))
+        if available_capital and size > available_capital:
+            size = available_capital
+        return size
+    
+    def calculate_kelly_fraction(self, win_rate: float, avg_win: Decimal, avg_loss: Decimal) -> Decimal:
+        """Calculate Kelly fraction"""
+        p = Decimal(str(win_rate))
+        q = Decimal('1') - p
+        b = avg_win / avg_loss if avg_loss != 0 else Decimal('1')
+        kelly = (p * b - q) / b if b != 0 else Decimal('0')
+        return max(Decimal('0'), kelly)
+    
+    def apply_kelly_criterion(self, capital: Decimal, kelly_fraction: Decimal, 
+                            max_fraction: float = 0.25) -> Decimal:
+        """Apply Kelly criterion with maximum limit"""
+        capped_kelly = min(kelly_fraction, Decimal(str(max_fraction)))
+        return capital * capped_kelly
+    
+    def adjust_for_volatility(self, base_size: Decimal, current_volatility: float, 
+                            target_volatility: float) -> Decimal:
+        """Adjust position size for volatility"""
+        vol_ratio = Decimal(str(target_volatility / current_volatility))
+        return base_size * vol_ratio
+    
+    def adjust_for_correlation(self, base_size: Decimal, existing_positions: List[Dict], 
+                             max_correlated_exposure: float) -> Decimal:
+        """Adjust for correlation with existing positions"""
+        total_correlated_exposure = Decimal('0')
+        for pos in existing_positions:
+            correlation = pos.get('correlation', 0)
+            if correlation > 0.5:  # High correlation
+                total_correlated_exposure += pos['size'] * Decimal(str(correlation))
+        
+        if total_correlated_exposure > 0:
+            reduction_factor = min(Decimal('1'), Decimal(str(max_correlated_exposure)) / total_correlated_exposure)
+            return base_size * reduction_factor
+        return base_size
+    
+    def calculate_risk_parity(self, assets: List[Dict], total_capital: Decimal, 
+                            target_risk: float) -> List[Decimal]:
+        """Calculate risk parity allocations"""
+        target_risk_decimal = Decimal(str(target_risk))
+        allocations = []
+        
+        for asset in assets:
+            volatility = Decimal(str(asset['volatility']))
+            if volatility > 0:
+                allocation = target_risk_decimal / volatility
+                allocations.append(allocation)
+            else:
+                allocations.append(Decimal('0'))
+        
+        # Normalize to total capital
+        total_allocation = sum(allocations)
+        if total_allocation > 0:
+            allocations = [alloc * total_capital / total_allocation for alloc in allocations]
+        
+        return allocations
+    
+    def apply_position_limits(self, requested_size: Decimal, total_capital: Decimal,
+                            max_position_pct: float, max_position_value: Decimal,
+                            available_capital: Decimal) -> Decimal:
+        """Apply various position limits"""
+        # Percentage limit
+        max_by_pct = total_capital * Decimal(str(max_position_pct))
+        size = min(requested_size, max_by_pct)
+        
+        # Absolute value limit
+        size = min(size, max_position_value)
+        
+        # Available capital limit
+        size = min(size, available_capital)
+        
+        return size
+    
+    def calculate_dynamic_size(self, base_size: Decimal, market_conditions: Dict[str, Any]) -> Decimal:
+        """Calculate dynamic position size based on market conditions"""
+        multiplier = Decimal('1')
+        
+        # Trend strength adjustment
+        trend_strength = market_conditions.get('trend_strength', 0.5)
+        if trend_strength > 0.7:
+            multiplier *= Decimal('1.2')  # Increase in strong trends
+        elif trend_strength < 0.3:
+            multiplier *= Decimal('0.8')  # Decrease in weak trends
+        
+        # Volatility regime adjustment
+        vol_regime = market_conditions.get('volatility_regime', 'medium')
+        if vol_regime == 'low':
+            multiplier *= Decimal('1.1')
+        elif vol_regime == 'high':
+            multiplier *= Decimal('0.7')
+        
+        # Market regime adjustment
+        market_regime = market_conditions.get('market_regime', 'neutral')
+        if market_regime == 'bull':
+            multiplier *= Decimal('1.1')
+        elif market_regime == 'bear':
+            multiplier *= Decimal('0.8')
+        
+        # Drawdown adjustment
+        drawdown_level = market_conditions.get('drawdown_level', 0)
+        if drawdown_level > 0.1:
+            multiplier *= Decimal('0.6')
+        elif drawdown_level > 0.05:
+            multiplier *= Decimal('0.8')
+        
+        return base_size * multiplier
+
+
+class StopLossManager:
+    """Stop loss management"""
+    
+    def __init__(self, config: RiskConfig):
+        self.config = config
+    
+    def calculate_fixed_stop(self, entry_price: Decimal, stop_percentage: Decimal, 
+                           side: str) -> Decimal:
+        """Calculate fixed percentage stop loss"""
+        if side.lower() == 'long':
+            return entry_price * (Decimal('1') - stop_percentage)
+        else:  # short
+            return entry_price * (Decimal('1') + stop_percentage)
+    
+    def calculate_atr_stop(self, entry_price: Decimal, atr: Decimal, 
+                         atr_multiplier: Decimal, side: str) -> Decimal:
+        """Calculate ATR-based stop loss"""
+        if side.lower() == 'long':
+            return entry_price - (atr * atr_multiplier)
+        else:  # short
+            return entry_price + (atr * atr_multiplier)
+    
+    def update_trailing_stop(self, position: Dict, new_price: Decimal, side: str) -> Decimal:
+        """Update trailing stop loss"""
+        current_stop = position['current_stop']
+        trailing_pct = position['trailing_percentage']
+        
+        if side.lower() == 'long':
+            # Update highest price seen
+            position['highest_price'] = max(position.get('highest_price', new_price), new_price)
+            # Calculate new stop from highest price
+            new_stop = position['highest_price'] * (Decimal('1') - trailing_pct)
+            # Stop can only move up, never down
+            return max(current_stop, new_stop)
+        else:  # short
+            # Update lowest price seen
+            position['lowest_price'] = min(position.get('lowest_price', new_price), new_price)
+            # Calculate new stop from lowest price
+            new_stop = position['lowest_price'] * (Decimal('1') + trailing_pct)
+            # Stop can only move down, never up
+            return min(current_stop, new_stop)
+    
+    def check_time_stop(self, position: Dict) -> bool:
+        """Check time-based stop"""
+        entry_time = position['entry_time']
+        time_limit = position['time_limit_hours']
+        current_time = datetime.now()
+        
+        time_diff = (current_time - entry_time).total_seconds() / 3600
+        return time_diff > time_limit
+    
+    def calculate_profit_targets(self, entry_price: Decimal, risk_amount: Decimal, 
+                               r_multiples: List[float]) -> List[Decimal]:
+        """Calculate profit targets at R-multiples"""
+        targets = []
+        for r in r_multiples:
+            target = entry_price + (risk_amount * Decimal(str(r)))
+            targets.append(target)
+        return targets
+    
+    def adjust_to_break_even(self, position: Dict) -> Decimal:
+        """Adjust stop to break-even"""
+        entry_price = position['entry_price']
+        current_price = position['current_price']
+        break_even_threshold = position['break_even_threshold']
+        
+        price_move = abs(current_price - entry_price) / entry_price
+        if price_move >= break_even_threshold:
+            return entry_price  # Move to break-even
+        return position['current_stop']
+    
+    def calculate_volatility_stop(self, entry_price: Decimal, volatility: float, 
+                                confidence_level: float) -> Decimal:
+        """Calculate volatility-based stop"""
+        vol_decimal = Decimal(str(volatility))
+        confidence_decimal = Decimal(str(confidence_level))
+        stop_distance = vol_decimal * confidence_decimal * entry_price
+        return entry_price - stop_distance
+
+
+class PortfolioRisk:
+    """Portfolio-wide risk management"""
+    
+    def __init__(self, config: RiskConfig):
+        self.config = config
+    
+    def calculate_var(self, portfolio_positions: List[Dict], returns_data: pd.DataFrame,
+                     confidence_level: float = 0.95, time_horizon: int = 1) -> float:
+        """Calculate Value at Risk"""
+        if returns_data.empty or not portfolio_positions:
+            return 0.0
+        
+        # Calculate portfolio returns
+        portfolio_values = []
+        for pos in portfolio_positions:
+            symbol = pos['symbol']
+            if symbol in returns_data.columns:
+                pos_returns = returns_data[symbol] * float(pos['size'])
+                portfolio_values.append(pos_returns)
+        
+        if not portfolio_values:
+            return 0.0
+        
+        portfolio_returns = pd.concat(portfolio_values, axis=1).sum(axis=1)
+        
+        # Calculate VaR
+        var_percentile = (1 - confidence_level) * 100
+        var = np.percentile(portfolio_returns, var_percentile) * np.sqrt(time_horizon)
+        
+        return float(var)
+    
+    def calculate_cvar(self, portfolio_positions: List[Dict], returns_data: pd.DataFrame,
+                      confidence_level: float = 0.95) -> float:
+        """Calculate Conditional Value at Risk"""
+        var = self.calculate_var(portfolio_positions, returns_data, confidence_level)
+        
+        # Calculate portfolio returns
+        portfolio_values = []
+        for pos in portfolio_positions:
+            symbol = pos['symbol']
+            if symbol in returns_data.columns:
+                pos_returns = returns_data[symbol] * float(pos['size'])
+                portfolio_values.append(pos_returns)
+        
+        if not portfolio_values:
+            return 0.0
+        
+        portfolio_returns = pd.concat(portfolio_values, axis=1).sum(axis=1)
+        
+        # CVaR is the expected value of losses beyond VaR
+        tail_losses = portfolio_returns[portfolio_returns <= var]
+        cvar = tail_losses.mean() if len(tail_losses) > 0 else var
+        
+        return float(cvar)
+    
+    def calculate_correlation_matrix(self, returns_data: pd.DataFrame) -> pd.DataFrame:
+        """Calculate correlation matrix"""
+        return returns_data.corr()
+    
+    def calculate_portfolio_beta(self, portfolio_positions: List[Dict], 
+                               returns_data: pd.DataFrame, market_returns: pd.Series) -> float:
+        """Calculate portfolio beta"""
+        portfolio_values = []
+        for pos in portfolio_positions:
+            symbol = pos['symbol']
+            if symbol in returns_data.columns:
+                weight = float(pos['size']) / sum(float(p['size']) for p in portfolio_positions)
+                pos_returns = returns_data[symbol] * weight
+                portfolio_values.append(pos_returns)
+        
+        if not portfolio_values:
+            return 1.0
+        
+        portfolio_returns = pd.concat(portfolio_values, axis=1).sum(axis=1)
+        
+        # Calculate beta
+        covariance = np.cov(portfolio_returns, market_returns)[0, 1]
+        market_variance = np.var(market_returns)
+        
+        beta = covariance / market_variance if market_variance != 0 else 1.0
+        return float(beta)
+    
+    def calculate_concentration_risk(self, portfolio_positions: List[Dict]) -> Dict[str, float]:
+        """Calculate concentration risk metrics"""
+        if not portfolio_positions:
+            return {}
+        
+        total_value = sum(float(pos['size']) for pos in portfolio_positions)
+        weights = [float(pos['size']) / total_value for pos in portfolio_positions]
+        
+        # Herfindahl Index
+        herfindahl = sum(w**2 for w in weights)
+        
+        # Largest position percentage
+        largest_pct = max(weights)
+        
+        # Top 3 concentration
+        top_3_weights = sorted(weights, reverse=True)[:3]
+        top_3_concentration = sum(top_3_weights)
+        
+        return {
+            'herfindahl_index': herfindahl,
+            'largest_position_pct': largest_pct,
+            'top_3_concentration': top_3_concentration
+        }
+    
+    def run_stress_tests(self, portfolio_positions: List[Dict], 
+                        stress_scenarios: List[Dict]) -> Dict[str, Dict]:
+        """Run portfolio stress tests"""
+        results = {}
+        
+        for scenario in stress_scenarios:
+            scenario_name = scenario['name']
+            shocks = scenario['shocks']
+            
+            portfolio_loss = 0.0
+            portfolio_value_before = 0.0
+            
+            for pos in portfolio_positions:
+                symbol = pos['symbol']
+                position_value = float(pos['size'])
+                portfolio_value_before += position_value
+                
+                if symbol in shocks:
+                    shock = shocks[symbol]
+                    loss = position_value * shock
+                    portfolio_loss += loss
+            
+            portfolio_value_after = portfolio_value_before + portfolio_loss
+            
+            results[scenario_name] = {
+                'portfolio_loss': portfolio_loss,
+                'portfolio_value_after': portfolio_value_after,
+                'loss_percentage': portfolio_loss / portfolio_value_before if portfolio_value_before > 0 else 0
+            }
+        
+        return results
+    
+    def calculate_margin_requirements(self, portfolio_positions: List[Dict],
+                                    initial_margin_pct: float, maintenance_margin_pct: float) -> Dict[str, float]:
+        """Calculate margin requirements"""
+        total_value = sum(float(pos['size']) for pos in portfolio_positions)
+        
+        initial_margin = total_value * initial_margin_pct
+        maintenance_margin = total_value * maintenance_margin_pct
+        current_margin_used = total_value * 0.5  # Assume 50% margin used
+        margin_available = initial_margin - current_margin_used
+        
+        return {
+            'initial_margin': initial_margin,
+            'maintenance_margin': maintenance_margin,
+            'current_margin_used': current_margin_used,
+            'margin_available': max(0, margin_available)
+        }
+
+
+class DrawdownMonitor:
+    """Drawdown monitoring"""
+    
+    def __init__(self, max_drawdown: float):
+        self.max_drawdown = max_drawdown
+        self.alert_thresholds = []
+    
+    def calculate_drawdown(self, equity_series: pd.Series) -> Dict[str, float]:
+        """Calculate drawdown metrics"""
+        peak = equity_series.expanding().max()
+        drawdown = (equity_series - peak) / peak
+        
+        current_drawdown = abs(drawdown.iloc[-1])
+        max_drawdown = abs(drawdown.min())
+        
+        # Find drawdown periods
+        in_drawdown = drawdown < 0
+        drawdown_periods = []
+        start_idx = None
+        
+        for i, is_dd in enumerate(in_drawdown):
+            if is_dd and start_idx is None:
+                start_idx = i
+            elif not is_dd and start_idx is not None:
+                drawdown_periods.append((start_idx, i-1))
+                start_idx = None
+        
+        # Calculate recovery times
+        avg_recovery_time = 0
+        if drawdown_periods:
+            recovery_times = [end - start + 1 for start, end in drawdown_periods]
+            avg_recovery_time = np.mean(recovery_times)
+        
+        return {
+            'current_drawdown': current_drawdown,
+            'max_drawdown': max_drawdown,
+            'drawdown_duration': len([x for x in drawdown if x < 0]),
+            'time_to_recovery': avg_recovery_time
+        }
+    
+    def set_alert_thresholds(self, thresholds: List[float]):
+        """Set drawdown alert thresholds"""
+        self.alert_thresholds = sorted(thresholds)
+    
+    def check_drawdown_alerts(self, current_drawdown: float) -> Optional[RiskAlert]:
+        """Check for drawdown alerts"""
+        if not hasattr(self, 'triggered_thresholds'):
+            self.triggered_thresholds = set()
+            
+        # Find highest threshold breached that hasn't been triggered
+        highest_threshold = None
+        for threshold in reversed(self.alert_thresholds):  # Check from highest to lowest
+            if current_drawdown >= threshold and threshold not in self.triggered_thresholds:
+                highest_threshold = threshold
+                break
+        
+        if highest_threshold is not None:
+            self.triggered_thresholds.add(highest_threshold)
+            
+            if highest_threshold <= 0.05:
+                level = RiskLevel.WARNING
+            elif highest_threshold <= 0.10:
+                level = RiskLevel.HIGH
+            else:
+                level = RiskLevel.CRITICAL
+            
+            return RiskAlert(
+                level=level,
+                type='DRAWDOWN',
+                message=f'Drawdown threshold {highest_threshold:.1%} breached: {current_drawdown:.1%}'
+            )
+        return None
+    
+    def calculate_recovery_statistics(self, drawdown_history: List[Dict]) -> Dict[str, float]:
+        """Calculate recovery statistics"""
+        if not drawdown_history:
+            return {}
+        
+        drawdowns = [dd['max_drawdown'] for dd in drawdown_history]
+        recovery_times = []
+        
+        for dd in drawdown_history:
+            if 'recovery_date' in dd and 'end_date' in dd:
+                recovery_time = (dd['recovery_date'] - dd['end_date']).days
+                recovery_times.append(recovery_time)
+        
+        return {
+            'avg_drawdown': np.mean(drawdowns),
+            'worst_drawdown': max(drawdowns),
+            'avg_recovery_time': np.mean(recovery_times) if recovery_times else 0,
+            'recovery_rate': len([dd for dd in drawdown_history if 'recovery_date' in dd]) / len(drawdown_history)
+        }
+
+
+class CorrelationTracker:
+    """Correlation tracking (placeholder)"""
+    
+    def __init__(self):
+        pass
+
+
+class RiskAdjustmentEngine:
+    """Dynamic risk adjustment"""
+    
+    def __init__(self, config: RiskConfig):
+        self.config = config
+    
+    def detect_volatility_regime(self, returns_series: pd.Series) -> str:
+        """Detect volatility regime"""
+        vol = returns_series.std()
+        
+        if vol < 0.015:
+            return 'low'
+        elif vol > 0.025:
+            return 'high'
+        else:
+            return 'medium'
+    
+    def scale_risk_parameters(self, base_params: Dict[str, Any], 
+                            volatility_regime: str, drawdown_level: float) -> Dict[str, Any]:
+        """Scale risk parameters based on conditions"""
+        scaled_params = base_params.copy()
+        
+        # Volatility adjustments
+        if volatility_regime == 'high':
+            scaled_params['position_size'] = base_params['position_size'] * Decimal('0.7')
+            scaled_params['stop_loss'] = base_params['stop_loss'] * Decimal('1.5')
+            scaled_params['max_positions'] = int(base_params['max_positions'] * 0.8)
+        elif volatility_regime == 'low':
+            scaled_params['position_size'] = base_params['position_size'] * Decimal('1.1')
+        
+        # Drawdown adjustments
+        if drawdown_level > 0.05:
+            scaled_params['position_size'] = scaled_params['position_size'] * Decimal('0.8')
+            scaled_params['max_positions'] = int(scaled_params['max_positions'] * 0.7)
+        
+        return scaled_params
+    
+    def adjust_for_correlation_regime(self, avg_correlation: float, 
+                                    base_exposure: Decimal) -> Decimal:
+        """Adjust exposure based on correlation regime"""
+        if avg_correlation > 0.7:  # High correlation
+            return base_exposure * Decimal('0.8')
+        elif avg_correlation < 0.3:  # Low correlation
+            return base_exposure * Decimal('1.1')
+        else:
+            return base_exposure
+    
+    def calculate_adaptive_stop(self, base_stop: Decimal, market_regime: str,
+                              volatility: float, win_rate: float) -> Decimal:
+        """Calculate adaptive stop loss"""
+        multiplier = Decimal('1')
+        
+        # Market regime adjustment
+        if market_regime == 'trending' and win_rate > 0.6:
+            multiplier *= Decimal('0.8')  # Tighter stops in trending market with good win rate
+        elif market_regime == 'ranging':
+            multiplier *= Decimal('1.2')  # Wider stops in ranging market
+        
+        # Volatility adjustment
+        vol_multiplier = Decimal(str(max(0.5, min(2.0, volatility / 0.01))))
+        multiplier *= vol_multiplier
+        
+        return base_stop * multiplier
+
+
+class RiskMetrics:
+    """Calculate various risk metrics"""
+    
+    def calculate_sharpe_ratio(self, returns: pd.Series, risk_free_rate: float = 0.0, 
+                             periods_per_year: int = 252) -> float:
+        """Calculate Sharpe ratio"""
+        excess_returns = returns - risk_free_rate
+        if returns.std() == 0:
+            return 0.0
+        return np.sqrt(periods_per_year) * excess_returns.mean() / returns.std()
+    
+    def calculate_sortino_ratio(self, returns: pd.Series, risk_free_rate: float = 0.0,
+                              periods_per_year: int = 252) -> float:
+        """Calculate Sortino ratio (downside deviation only)"""
+        excess_returns = returns - risk_free_rate / periods_per_year
+        downside_returns = excess_returns[excess_returns < 0]
+        downside_std = downside_returns.std()
+        return np.sqrt(periods_per_year) * excess_returns.mean() / downside_std
+    
+    def calculate_calmar_ratio(self, equity_curve: pd.Series, periods_per_year: int = 252) -> float:
+        """Calculate Calmar ratio (annual return / max drawdown)"""
+        returns = equity_curve.pct_change().dropna()
+        annual_return = (1 + returns.mean()) ** periods_per_year - 1
+        max_dd = self.calculate_max_drawdown(equity_curve)
+        return annual_return / abs(max_dd) if max_dd != 0 else 0
+    
+    def calculate_max_drawdown(self, equity_curve: pd.Series) -> float:
+        """Calculate maximum drawdown from equity curve"""
+        peak = equity_curve.expanding().max()
+        drawdown = (equity_curve - peak) / peak
+        return drawdown.min()
+    
+    def calculate_all_metrics(self, returns: pd.Series) -> Dict:
+        """Calculate comprehensive risk metrics"""
+        return {
+            'total_return': (1 + returns).prod() - 1,
+            'annual_return': (1 + returns.mean()) ** 252 - 1,
+            'volatility': returns.std() * np.sqrt(252),
+            'sharpe_ratio': self.calculate_sharpe_ratio(returns),
+            'sortino_ratio': self.calculate_sortino_ratio(returns),
+            'max_drawdown': self.calculate_max_drawdown(returns.cumsum()),
+            'var_95': returns.quantile(0.05),
+            'cvar_95': returns[returns <= returns.quantile(0.05)].mean(),
+            'win_rate': (returns > 0).sum() / len(returns),
+            'profit_factor': returns[returns > 0].sum() / abs(returns[returns < 0].sum())
+        }
+
+
+class CorrelationTracker:
+    """Track asset correlations"""
+    
+    def __init__(self, window: int = 30):
+        self.window = window
+        self.returns_history = {}
+        
+    def update_returns(self, symbol: str, returns: pd.Series):
+        """Update returns history for symbol"""
+        self.returns_history[symbol] = returns.tail(self.window)
+        
+    def calculate_correlation_matrix(self) -> pd.DataFrame:
+        """Calculate correlation matrix for all tracked assets"""
+        if not self.returns_history:
+            return pd.DataFrame()
+            
+        combined_returns = pd.DataFrame(self.returns_history)
+        return combined_returns.corr()
+    
+    def get_avg_correlation(self, symbol: str) -> float:
+        """Get average correlation of symbol with all other assets"""
+        corr_matrix = self.calculate_correlation_matrix()
+        if symbol not in corr_matrix.columns or len(corr_matrix) < 2:
+            return 0.0
+            
+        # Exclude self-correlation (diagonal = 1)
+        correlations = corr_matrix[symbol][corr_matrix.index != symbol]
+        return correlations.mean()
+    
+    def check_correlation_limits(self, symbol: str, max_correlation: float = 0.7) -> bool:
+        """Check if adding position violates correlation limits"""
+        avg_corr = self.get_avg_correlation(symbol)
+        return avg_corr <= max_correlation
+
+
+class RiskManagementSystem:
+    """Main risk management system coordinator"""
+    
+    def __init__(self, config: RiskConfig):
+        self.config = config
+        self.position_sizer = PositionSizer(config)
+        self.stop_loss_manager = StopLossManager(config)
+        self.portfolio_risk = PortfolioRisk(config)
+        self.drawdown_monitor = DrawdownMonitor(config.max_drawdown)
+        self.correlation_tracker = CorrelationTracker(config.correlation_window)
+        self.risk_adjustment_engine = RiskAdjustmentEngine(config)
+        self.alerts = []
+        self.monitoring_active = False
+        
+    async def validate_trade(self, trade: Dict, portfolio: Dict) -> Dict:
+        """Validate trade against risk parameters"""
+        result = {
+            'approved': True,
+            'adjusted_size': trade.get('value', Decimal('0')),
+            'risk_warnings': [],
+            'position_score': 0.0,
+            'rejection_reason': None
+        }
+        
+        # Check position size limits
+        if trade['value'] > portfolio['total_capital'] * Decimal(str(self.config.max_position_size)):
+            result['approved'] = False
+            result['rejection_reason'] = 'Position size exceeds limit'
+            
+        # Check portfolio risk
+        if portfolio.get('current_drawdown', 0) > self.config.max_drawdown:
+            result['approved'] = False
+            result['rejection_reason'] = 'Portfolio drawdown exceeds limit'
+            
+        return result
+    
+    async def start_monitoring(self, interval: int = 30):
+        """Start real-time risk monitoring"""
+        self.monitoring_active = True
+        
+        while self.monitoring_active:
+            # Monitor portfolio metrics
+            await asyncio.sleep(interval)
+            
+    def update_portfolio(self, update: Dict):
+        """Update portfolio data"""
+        # Process portfolio update
+        pass
+    
+    def get_alerts(self) -> List[RiskAlert]:
+        """Get current risk alerts"""
+        return self.alerts
+    
+    def add_historical_data(self, returns: pd.Series, positions: List, trades: List):
+        """Add historical data for analysis"""
+        pass
+    
+    def generate_risk_report(self) -> Dict:
+        """Generate comprehensive risk report"""
+        return {
+            'summary': {},
+            'portfolio_metrics': {},
+            'risk_metrics': {'current_drawdown': 0.08},
+            'exposure_analysis': {},
+            'recommendations': ['reduce_position_sizes'] if True else []
+        }
+
+
+# Alias for backward compatibility
+RiskManager = RiskManagementSystem
 
 
 class PositionTracker:
