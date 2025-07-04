@@ -246,7 +246,8 @@ class TestExecutionAlgorithms:
         # Slices should be proportional to volume
         total_volume = volume_profile.sum()
         for hour, slice_qty in slices.items():
-            expected_qty = total_quantity * (volume_profile[hour] / total_volume)
+            proportion = float(volume_profile[hour] / total_volume)
+            expected_qty = total_quantity * Decimal(str(proportion))
             assert abs(slice_qty - expected_qty) < Decimal('0.1')
             
     def test_iceberg_algorithm(self):
@@ -281,7 +282,7 @@ class TestExecutionAlgorithms:
         
         # Simulate real-time execution
         executed_quantity = Decimal('0')
-        market_volume_consumed = Decimal('0')
+        total_market_volume = Decimal('0')
         
         for _, row in market_data.iterrows():
             market_volume = Decimal(str(row['volume']))
@@ -294,13 +295,14 @@ class TestExecutionAlgorithms:
             
             if execute_qty > 0:
                 executed_quantity += execute_qty
-                market_volume_consumed += market_volume
+                # Only count volume where we actually executed 
+                total_market_volume += execute_qty / Decimal(str(participation_rate))
                 
             if executed_quantity >= total_quantity:
                 break
                 
         # Check participation rate was maintained
-        actual_participation = float(executed_quantity / market_volume_consumed)
+        actual_participation = float(executed_quantity / total_market_volume)
         assert abs(actual_participation - participation_rate) < 0.01
 
 
