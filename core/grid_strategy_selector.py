@@ -33,6 +33,9 @@ from core.market_regime_detector import MarketRegime
 from core.attention_learning_layer import AttentionLearningLayer, AttentionPhase
 from core.overfitting_detector import OverfittingDetector, ValidationResult
 
+# 5 Focus Integration
+from core.grid_optimizer import DynamicGridOptimizer
+
 # Setup logger
 logger = logging.getLogger(__name__)
 

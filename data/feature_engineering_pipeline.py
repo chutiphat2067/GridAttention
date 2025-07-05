@@ -25,6 +25,7 @@ from numba import jit
 
 # Local imports (these would be from other modules)
 from data.market_data_input import MarketTick
+from data.advanced_features import AdvancedFeatureEngineer
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -668,6 +669,10 @@ class FeatureEngineeringPipeline:
         self.market_data_buffer = deque(maxlen=self.config.get('buffer_size', 500))
         self.min_history_required = self._calculate_min_history()
         
+        # Initialize advanced feature engineer (5 Focus Module 1)
+        self.advanced_engineer = AdvancedFeatureEngineer(self.config)
+        self.use_advanced_features = self.config.get('use_advanced_features', True)
+        
         # Performance tracking
         self.extraction_count = 0
         self.cache_hits = 0
@@ -785,6 +790,17 @@ class FeatureEngineeringPipeline:
             extraction_times[name] = extract_time
             quality_scores[name] = quality
             
+        # Add advanced features (5 Focus Module 1)
+        if self.use_advanced_features:
+            try:
+                # Convert market data to DataFrame for advanced features
+                df_data = self._convert_ticks_to_dataframe(market_data)
+                advanced_features = self.advanced_engineer.get_all_features(df_data)
+                features.update(advanced_features)
+                logger.info(f"Added {len(advanced_features)} advanced features")
+            except Exception as e:
+                logger.warning(f"Failed to extract advanced features: {e}")
+        
         # Track for attention learning
         await self.attention_tracker.record(features, extraction_times)
         
@@ -846,6 +862,33 @@ class FeatureEngineeringPipeline:
         quality *= stats['success_rate']
         
         return max(0.0, quality)
+    
+    def _convert_ticks_to_dataframe(self, market_data: List[MarketTick]) -> pd.DataFrame:
+        """Convert market ticks to DataFrame for advanced features"""
+        try:
+            # Extract data from MarketTick objects
+            data = {
+                'timestamp': [tick.timestamp for tick in market_data],
+                'open': [tick.price for tick in market_data],  # Using price as OHLC for simplicity
+                'high': [tick.price * 1.0001 for tick in market_data],  # Mock high
+                'low': [tick.price * 0.9999 for tick in market_data],   # Mock low
+                'close': [tick.price for tick in market_data],
+                'volume': [tick.volume if hasattr(tick, 'volume') else 1000 for tick in market_data]
+            }
+            
+            df = pd.DataFrame(data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df.set_index('timestamp', inplace=True)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to convert ticks to DataFrame: {e}")
+            # Return minimal DataFrame
+            return pd.DataFrame({
+                'close': [tick.price for tick in market_data[-100:]],
+                'volume': [1000] * len(market_data[-100:])
+            })
         
     async def get_feature_importance(self) -> Dict[str, float]:
         """Get current feature importance scores"""
