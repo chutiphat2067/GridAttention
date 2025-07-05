@@ -79,6 +79,35 @@ performance:
   report_interval: 3600    # 1 hour
   save_interval: 86400     # 24 hours
 
+# Priority 1-2 Fixes Configuration
+memory:
+  max_memory_percent: 80
+  cleanup_interval: 300      # 5 minutes
+  auto_cleanup: true
+  retention_hours: 24
+
+validation:
+  enable_validation: true
+  feature_validation: true
+  order_validation: true
+  data_integrity_checks: true
+  anomaly_threshold: 4       # standard deviations
+
+error_recovery:
+  max_retry_attempts: 3
+  initial_delay: 1.0
+  max_delay: 60.0
+  circuit_breaker_threshold: 5
+  recovery_timeout: 60
+
+performance_optimization:
+  enable_caching: true
+  cache_size: 1000
+  cache_ttl: 300             # 5 minutes
+  use_optimized_calculator: true
+  batch_processing: true
+  batch_size: 50
+
 feedback:
   learning_rate: 0.01
   adaptation_speed: "medium"
