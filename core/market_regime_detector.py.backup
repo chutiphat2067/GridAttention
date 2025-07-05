@@ -28,6 +28,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_score
 from sklearn.ensemble import IsolationForest
+
+# Local imports for 5 Focus Integration
+from core.enhanced_regime_detector import EnhancedRegimeDetector
 from sklearn.cluster import DBSCAN
 from sklearn.neural_network import MLPClassifier
 
@@ -1314,8 +1317,34 @@ class MarketRegimeDetector:
                 confidence = 0.3
                 
             else:
+                # 5 Focus Integration - Use Enhanced Regime Detection (Module 2)
+                if self.use_enhanced_regime:
+                    try:
+                        timestamp = pd.Timestamp.now()
+                        regime_analysis = self.enhanced_detector.detect_regime_with_context(features, timestamp)
+                        
+                        # Convert enhanced regime to MarketRegime enum
+                        regime_mapping = {
+                            'TRENDING': MarketRegime.TRENDING,
+                            'RANGING': MarketRegime.RANGING,
+                            'VOLATILE': MarketRegime.VOLATILE,
+                            'UNCERTAIN': MarketRegime.RANGING  # Map uncertain to ranging
+                        }
+                        regime = regime_mapping.get(regime_analysis.base_regime, MarketRegime.RANGING)
+                        confidence = regime_analysis.confidence
+                        
+                        # Store sub-regime info for later use
+                        self.current_sub_regime = regime_analysis.sub_regime
+                        self.transition_probability = regime_analysis.transition_probability
+                        
+                        logger.info(f"Enhanced regime: {regime_analysis.base_regime} -> {regime_analysis.sub_regime} (conf: {confidence:.3f})")
+                        
+                    except Exception as e:
+                        logger.warning(f"Enhanced regime detection failed, using fallback: {e}")
+                        regime, confidence = await self._detect_regime_simple(features)
+                        
                 # Use ensemble if enabled and not overfitting
-                if self.use_ensemble and not await self._is_overfitting():
+                elif self.use_ensemble and not await self._is_overfitting():
                     regime, confidence = await self.ensemble_detector.detect_regime(features)
                 else:
                     # Fallback to simple rule-based
@@ -1830,6 +1859,10 @@ class MarketRegimeDetector:
         self.gmm_model = None  # Gaussian Mixture Model
         self.scaler = StandardScaler()
         self.is_ml_initialized = False
+        
+        # 5 Focus Integration - Enhanced Regime Detection (Module 2)
+        self.enhanced_detector = EnhancedRegimeDetector(config.__dict__ if hasattr(config, '__dict__') else config or {})
+        self.use_enhanced_regime = getattr(config, 'use_enhanced_regime', True)
         
         # Performance tracking
         self.detection_count = 0

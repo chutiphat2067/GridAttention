@@ -27,6 +27,10 @@ from numba import jit
 from data.market_data_input import MarketTick
 from data.advanced_features import AdvancedFeatureEngineer
 
+# Priority 1-2 Fixes imports
+from utils.validators import FeatureValidator
+from utils.optimizations import OptimizedFeatureCalculator, PerformanceCache
+
 # Setup logger
 logger = logging.getLogger(__name__)
 
